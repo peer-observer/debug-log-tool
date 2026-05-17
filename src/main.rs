@@ -2,6 +2,9 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+mod merge;
+mod timestamp;
+
 #[derive(Parser)]
 #[command(version, about = "Tools for working with Bitcoin Core debug.log files")]
 struct Cli {
@@ -13,12 +16,12 @@ struct Cli {
 enum Command {
     /// Interleave gzipped per-node debug.log files into one timestamp-ordered log.
     ///
-    /// Each input filename is expected to look like `debug.log-<date>-<node>.gz`;
-    /// the `<node>` segment is used to prefix every line from that file.
+    /// Every file in the directory matching `debug.log-<date>-<node>.gz` is
+    /// included. Each output line is prefixed with the `<node>` segment of its
+    /// source filename.
     Merge {
-        /// Input gzipped debug.log files (one per node, same day).
-        #[arg(required = true)]
-        inputs: Vec<PathBuf>,
+        /// Directory containing the per-node gzipped logs.
+        input_dir: PathBuf,
 
         /// Output path for the zstd-compressed merged log.
         #[arg(short, long)]
@@ -43,10 +46,11 @@ enum Command {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Merge { .. } => {
-            eprintln!("merge: not yet implemented");
-            Err(())
-        }
+        Command::Merge {
+            input_dir,
+            output,
+            level,
+        } => merge::run(&input_dir, &output, level).map_err(|e| eprintln!("merge: {e}")),
         Command::Split { .. } => {
             eprintln!("split: not yet implemented");
             Err(())
