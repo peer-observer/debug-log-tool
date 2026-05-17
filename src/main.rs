@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 mod merge;
+mod split;
 mod timestamp;
 
 #[derive(Parser)]
@@ -51,9 +52,8 @@ fn main() -> std::process::ExitCode {
             output,
             level,
         } => merge::run(&input_dir, &output, level).map_err(|e| eprintln!("merge: {e}")),
-        Command::Split { .. } => {
-            eprintln!("split: not yet implemented");
-            Err(())
+        Command::Split { input, output_dir } => {
+            split::run(&input, &output_dir).map_err(|e| eprintln!("split: {e}"))
         }
     };
     match result {
