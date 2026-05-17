@@ -1,0 +1,14 @@
+[package]
+name = "debug-log-tool"
+version = "0.1.0"
+edition = "2024"
+description = "Tools for working with Bitcoin Core debug.log files"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+flate2 = "1"
+zstd = "0.13"
+
+[profile.release]
+lto = "thin"
