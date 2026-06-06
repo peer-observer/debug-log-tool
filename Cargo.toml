@@ -10,5 +10,9 @@ clap = { version = "4", features = ["derive"] }
 flate2 = "1"
 zstd = "0.13"
 
+[dev-dependencies]
+flate2 = "1"
+zstd = "0.13"
+
 [profile.release]
 lto = "thin"
