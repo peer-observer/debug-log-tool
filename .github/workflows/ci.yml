@@ -72,3 +72,15 @@ jobs:
             experimental-features = nix-command flakes
       - name: nix flake check
         run: nix flake check
+
+  check:
+    name: check (dev shell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: nix develop --command check
+        run: nix develop --command check
