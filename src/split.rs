@@ -34,9 +34,7 @@ pub fn run(input: &Path, output_dir: &Path) -> io::Result<()> {
         line_no += 1;
 
         let Some(sp) = buf.find(' ') else {
-            return Err(invalid(format!(
-                "line {line_no}: missing `<node> ` prefix"
-            )));
+            return Err(invalid(format!("line {line_no}: missing `<node> ` prefix")));
         };
         let node = &buf[..sp];
         let rest = &buf[sp + 1..];
