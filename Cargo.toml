@@ -1,16 +1,8 @@
-[package]
-name = "debug-log-tool"
-version = "0.1.0"
-edition = "2024"
-description = "Tools for working with Bitcoin Core debug.log files"
-license = "MIT"
+[workspace]
+members = ["crates/*"]
+resolver = "2"
 
-[dependencies]
-clap = { version = "4", features = ["derive"] }
-flate2 = "1"
-zstd = "0.13"
-
-[dev-dependencies]
+[workspace.dependencies]
 flate2 = "1"
 zstd = "0.13"
 
