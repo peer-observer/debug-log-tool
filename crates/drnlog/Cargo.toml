@@ -1,0 +1,8 @@
+[package]
+name = "drnlog"
+version = "0.1.0"
+edition = "2024"
+description = "Drain-style template extraction over Bitcoin Core debug.log"
+license = "MIT"
+
+[dependencies]
