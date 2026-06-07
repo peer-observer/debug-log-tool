@@ -136,6 +136,7 @@ name = "debug-log-tool"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "drnlog",
  "flate2",
  "zstd",
 ]

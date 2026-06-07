@@ -181,3 +181,106 @@ fn round_trips_sample_fixtures_if_present() {
         );
     }
 }
+
+/// Run `templates` against a synthetic `.gz` fixture. Asserts that the
+/// expected per-category clusters appear with the expected counts and
+/// placeholder substitutions, and that `--load-state` / `--save-state`
+/// round-trips correctly (counts add up across runs).
+#[test]
+fn templates_extracts_clusters_and_round_trips_state() {
+    let dir = test_dir("templates_extracts_clusters_and_round_trips_state");
+    let fixture = dir.join("debug.log.gz");
+    let state = dir.join("state.jsonl");
+
+    // 100 `[net] received: ping … peer=N` + 50 `[validation] UpdateTip: … height=N`
+    let mut content = String::new();
+    for i in 1..=100 {
+        content.push_str(&format!(
+            "2026-06-06T12:34:56Z [net] received: ping (8 bytes) peer={i}\n"
+        ));
+    }
+    let hash = "0".repeat(64);
+    for i in 1..=50 {
+        content.push_str(&format!(
+            "2026-06-06T12:35:{i:02} [validation] UpdateTip: new best={hash} height={}\n",
+            800_000 + i
+        ));
+    }
+    write_gz(&fixture, &content);
+
+    // First run: produce state + JSON output to assert against.
+    let out = bin()
+        .args(["templates", "--json", "--save-state"])
+        .arg(&state)
+        .arg(&fixture)
+        .output()
+        .expect("spawn templates");
+    assert!(
+        out.status.success(),
+        "templates run 1 failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json1 = String::from_utf8(out.stdout).unwrap();
+    let lines1: Vec<&str> = json1.lines().collect();
+    assert_eq!(lines1.len(), 2, "expected 2 clusters; got: {json1}");
+    let net = lines1
+        .iter()
+        .find(|l| l.contains(r#""category":"net""#))
+        .unwrap();
+    let val = lines1
+        .iter()
+        .find(|l| l.contains(r#""category":"validation""#))
+        .unwrap();
+    assert!(net.contains(r#""count":100"#), "net count line: {net}");
+    assert!(net.contains("<PEER>"), "net should show <PEER>: {net}");
+    assert!(net.contains("<BYTES>"), "net should show <BYTES>: {net}");
+    assert!(val.contains(r#""count":50"#), "validation count: {val}");
+    assert!(
+        val.contains("<HASH>"),
+        "validation should show <HASH>: {val}"
+    );
+    assert!(
+        val.contains("<HEIGHT>"),
+        "validation should show <HEIGHT>: {val}"
+    );
+
+    // Second run: --load-state from first, ingest same fixture, --save-state.
+    // Counts should double.
+    let out = bin()
+        .args(["templates", "--json", "--load-state"])
+        .arg(&state)
+        .arg("--save-state")
+        .arg(&state)
+        .arg(&fixture)
+        .output()
+        .expect("spawn templates run 2");
+    assert!(
+        out.status.success(),
+        "templates run 2 failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json2 = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        json2.contains(r#""count":200"#),
+        "expected net count 200 after second pass: {json2}"
+    );
+    assert!(
+        json2.contains(r#""count":100"#),
+        "expected validation count 100 after second pass: {json2}"
+    );
+
+    // Third run: --load-state only (no input). Counts unchanged.
+    let out = bin()
+        .args(["templates", "--json", "--load-state"])
+        .arg(&state)
+        .output()
+        .expect("spawn templates run 3");
+    assert!(
+        out.status.success(),
+        "templates run 3 failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json3 = String::from_utf8(out.stdout).unwrap();
+    assert!(json3.contains(r#""count":200"#));
+    assert!(json3.contains(r#""count":100"#));
+}
