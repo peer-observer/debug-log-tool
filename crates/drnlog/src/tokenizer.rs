@@ -51,6 +51,10 @@ pub enum Token<'a> {
     Onion(&'a str),
     /// `<base32>.onion:<port>`.
     OnionPort(&'a str),
+    /// `<base32>.b32.i2p`
+    I2P(&'a str),
+    /// `<base32>.b32.i2p:0`
+    I2PPort(&'a str),
     /// Folded `<int> bytes` pair.
     ByteCount(&'a str),
     /// Number with a time-unit suffix (`ns`, `us`, `μs`, `ms`, `s`, `m`,
@@ -93,6 +97,8 @@ impl<'a> Token<'a> {
             Token::Ipv6Port(_) => TokenKind::Ipv6Port,
             Token::Onion(_) => TokenKind::Onion,
             Token::OnionPort(_) => TokenKind::OnionPort,
+            Token::I2P(_) => TokenKind::I2P,
+            Token::I2PPort(_) => TokenKind::I2PPort,
             Token::ByteCount(_) => TokenKind::ByteCount,
             Token::Duration(_) => TokenKind::Duration,
             Token::Bech32(_) => TokenKind::Bech32,
@@ -116,6 +122,8 @@ impl<'a> Token<'a> {
             | Token::Ipv6Port(s)
             | Token::Onion(s)
             | Token::OnionPort(s)
+            | Token::I2P(s)
+            | Token::I2PPort(s)
             | Token::ByteCount(s)
             | Token::Duration(s)
             | Token::Bech32(s)
@@ -140,6 +148,8 @@ pub enum TokenKind {
     Ipv6Port,
     Onion,
     OnionPort,
+    I2P,
+    I2PPort,
     ByteCount,
     Duration,
     Bech32,
@@ -156,12 +166,14 @@ impl TokenKind {
             TokenKind::Float => "FLOAT",
             TokenKind::Hash => "HASH",
             TokenKind::Hex => "HEX",
-            TokenKind::Ipv4 => "IP4",
-            TokenKind::Ipv4Port => "IP4PORT",
-            TokenKind::Ipv6 => "IP6",
-            TokenKind::Ipv6Port => "IP6PORT",
+            TokenKind::Ipv4 => "IPv4",
+            TokenKind::Ipv4Port => "IPv4:PORT",
+            TokenKind::Ipv6 => "IPv6",
+            TokenKind::Ipv6Port => "IPv6:PORT",
             TokenKind::Onion => "ONION",
-            TokenKind::OnionPort => "ONIONPORT",
+            TokenKind::OnionPort => "ONION:PORT",
+            TokenKind::I2P => "I2P",
+            TokenKind::I2PPort => "I2P:PORT",
             TokenKind::ByteCount => "BYTES",
             TokenKind::Duration => "DUR",
             TokenKind::Bech32 => "BECH32",
@@ -178,12 +190,14 @@ impl TokenKind {
             "FLOAT" => Self::Float,
             "HASH" => Self::Hash,
             "HEX" => Self::Hex,
-            "IP4" => Self::Ipv4,
-            "IP4PORT" => Self::Ipv4Port,
-            "IP6" => Self::Ipv6,
-            "IP6PORT" => Self::Ipv6Port,
+            "IPv4" => Self::Ipv4,
+            "IPv4:PORT" => Self::Ipv4Port,
+            "IPv6" => Self::Ipv6,
+            "IPv6:PORT" => Self::Ipv6Port,
             "ONION" => Self::Onion,
-            "ONIONPORT" => Self::OnionPort,
+            "ONION:PORT" => Self::OnionPort,
+            "I2P" => Self::I2P,
+            "I2P:PORT" => Self::I2PPort,
             "BYTES" => Self::ByteCount,
             "DUR" => Self::Duration,
             "BECH32" => Self::Bech32,
@@ -271,6 +285,8 @@ const RECOGNIZERS: &[Classifier] = &[
     recognize_ipv4,
     recognize_onion_port,
     recognize_onion,
+    recognize_i2p_port,
+    recognize_i2p,
     recognize_bech32,
     recognize_hex,
     recognize_base58,
@@ -433,6 +449,23 @@ fn recognize_onion_port<'a>(s: &'a str, _peek: Option<&'a str>) -> Option<(Token
     Some((Token::OnionPort(s), 1))
 }
 
+fn recognize_i2p<'a>(s: &'a str, _peek: Option<&'a str>) -> Option<(Token<'a>, usize)> {
+    let base = s.strip_suffix(".b32.i2p")?;
+    match is_i2p_base(base) {
+        true => Some((Token::I2P(s), 1)),
+        false => None,
+    }
+}
+
+fn recognize_i2p_port<'a>(s: &'a str, _peek: Option<&'a str>) -> Option<(Token<'a>, usize)> {
+    let (host, port) = s.rsplit_once(':')?;
+    let base = host.strip_suffix(".b32.i2p")?;
+    if !is_i2p_base(base) || !is_port(port) {
+        return None;
+    }
+    Some((Token::I2PPort(s), 1))
+}
+
 fn recognize_bech32<'a>(s: &'a str, _peek: Option<&'a str>) -> Option<(Token<'a>, usize)> {
     let body = s
         .strip_prefix("bc1")
@@ -585,6 +618,17 @@ fn is_onion_base(base: &str) -> bool {
     if base.len() != 16 && base.len() != 56 {
         return false;
     }
+    is_base32(base)
+}
+
+fn is_i2p_base(base: &str) -> bool {
+    if base.len() == 52 {
+        return is_base32(base);
+    }
+    false
+}
+
+fn is_base32(base: &str) -> bool {
     !base.is_empty() && base.bytes().all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
 }
 
@@ -638,6 +682,8 @@ mod tests {
             TokenKind::Ipv6Port,
             TokenKind::Onion,
             TokenKind::OnionPort,
+            TokenKind::I2P,
+            TokenKind::I2PPort,
             TokenKind::ByteCount,
             TokenKind::Duration,
             TokenKind::Bech32,
@@ -663,6 +709,14 @@ mod tests {
         assert_eq!(kinds("fe80::1"), vec![TokenKind::Ipv6]);
         assert_eq!(kinds("[::1]:8333"), vec![TokenKind::Ipv6Port]);
         assert_eq!(kinds("abcdefghijklmnop.onion"), vec![TokenKind::Onion]);
+        assert_eq!(
+            kinds("5pcdrykqq4dewrtm4ngeduhivsqqmzs5rvt5icxnjmazn4c3yxta.b32.i2p"),
+            vec![TokenKind::I2P]
+        );
+        assert_eq!(
+            kinds("5pcdrykqq4dewrtm4ngeduhivsqqmzs5rvt5icxnjmazn4c3yxta.b32.i2p:0"),
+            vec![TokenKind::I2PPort]
+        );
         assert_eq!(
             kinds("abcdefghijklmnop.onion:8333"),
             vec![TokenKind::OnionPort]
@@ -720,6 +774,12 @@ mod tests {
                 "TransactionAddedToMempool: txid=38925028e45fde071a75a7497eb215d3070f33298bda82f5a3b43cd24aa35673 wtxid=f09e953bbcd75f8531ee65ed2822ceb59ca691104cfcabaaddf98c9c57a5f928"
             ),
             "TransactionAddedToMempool : txid = <HASH> wtxid = <HASH>"
+        );
+        assert_eq!(
+            render(
+                "1 Selected 5pcdrykqq4dewrtm4ngeduhivszcmzs5rvt5icxnjmazn4c3yxta.b32.i2p:0 from tried"
+            ),
+            "<INT> Selected <I2P:PORT> from tried"
         );
         assert_eq!(
             render(
