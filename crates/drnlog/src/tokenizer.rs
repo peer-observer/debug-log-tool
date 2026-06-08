@@ -220,11 +220,10 @@ fn split_content(content: &str) -> Vec<&str> {
 }
 
 fn split_atom<'a>(s: &'a str, out: &mut Vec<&'a str>) {
-    // Peel a single trailing `:` so it can never glue onto a recognizer-
-    // matched token like `peer=9` and keep it from matching. Commas stay
-    // attached — bitcoind emits things like `txn,` that we want to leave
-    // as one token rather than turn into `txn ,` after rendering.
-    let (body, trailing_colon) = if s.len() > 1 && s.as_bytes().last() == Some(&b':') {
+    // Peel a single trailing `:` or `,` so it never glues onto a
+    // recognizer-matched token (e.g. `peer=9:` or `4d2a...hash,`).
+    let tail = s.as_bytes().last();
+    let (body, trailing_sep) = if s.len() > 1 && matches!(tail, Some(&b':') | Some(&b',')) {
         (&s[..s.len() - 1], Some(&s[s.len() - 1..]))
     } else {
         (s, None)
@@ -233,7 +232,7 @@ fn split_atom<'a>(s: &'a str, out: &mut Vec<&'a str>) {
     // Protected tokens recognizers want to see whole.
     if looks_like_ipv6_port(body) || body.starts_with("peer=") || body.starts_with("height=") {
         out.push(body);
-        if let Some(t) = trailing_colon {
+        if let Some(t) = trailing_sep {
             out.push(t);
         }
         return;
@@ -258,7 +257,7 @@ fn split_atom<'a>(s: &'a str, out: &mut Vec<&'a str>) {
     if start < bytes.len() {
         out.push(&body[start..]);
     }
-    if let Some(t) = trailing_colon {
+    if let Some(t) = trailing_sep {
         out.push(t);
     }
 }
@@ -785,7 +784,7 @@ mod tests {
             render(
                 "AcceptToMemoryPool: peer=9: accepted a9d6263d3e2320d1e8c742e9ce8c269f5f8b2ea4d7cefa4e2565215a14cd52d3 (wtxid=8fff3eb19a87650071a65f4dd14cb35ef41438c21dec9c068e8dc370e317b9ef) (poolsz 18829 txn, 87127 kB)"
             ),
-            "AcceptToMemoryPool : <PEER> : accepted <HASH> ( wtxid = <HASH> ) ( poolsz <INT> txn, <INT> kB )"
+            "AcceptToMemoryPool : <PEER> : accepted <HASH> ( wtxid = <HASH> ) ( poolsz <INT> txn , <INT> kB )"
         );
         assert_eq!(
             render(&format!(
@@ -802,11 +801,23 @@ mod tests {
 
     #[test]
     fn structural_punctuation_preserved_as_text() {
-        // Parens split structurally; commas stick to their preceding token
-        // (so `a,` stays attached rather than rendering as `a ,`).
+        // Parens split structurally; trailing commas are also split off so
+        // typed values like hashes and integers are recognised.
         let toks = tokenize("(a, b)");
         let labels: Vec<&str> = toks.iter().map(|t| t.text()).collect();
-        assert_eq!(labels, vec!["(", "a,", "b", ")"]);
+        assert_eq!(labels, vec!["(", "a", ",", "b", ")"]);
+    }
+
+    #[test]
+    fn trailing_comma_split_for_typed_tokens() {
+        // A hash or integer immediately followed by a comma (as in bitcoind's
+        // `wtxid = <hash>,` or `fees = 639,` patterns) must be recognised as
+        // the typed token with a separate Text(",").
+        let hash = "a".repeat(64);
+        assert_eq!(render(&format!("{hash},")), "<HASH> ,");
+        assert_eq!(render("fees = 639,"), "fees = <INT> ,");
+        // Plain text words also get the trailing comma split off now.
+        assert_eq!(render("txn,"), "txn ,");
     }
 
     #[test]
