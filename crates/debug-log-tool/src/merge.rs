@@ -1,13 +1,15 @@
-//! Interleave several gzipped per-node `debug.log` files into a single
-//! zstd-compressed log, with each line prefixed by the node name parsed from
-//! its source filename.
+//! Interleave gzipped per-node `debug.log` files into one timestamp-ordered
+//! zstd log *per day*, with each line prefixed by the node name parsed from
+//! its source filename. Inputs are grouped by the `<date>` segment of their
+//! filename, so a directory holding several days' logs yields one
+//! `debug.log-<date>.zst` per day.
 //!
-//! The merge is a streaming k-way merge: at any time the heap holds at most
-//! one pending line per input file, so memory use is bounded by the number
-//! of inputs rather than the total log size.
+//! Each day's merge is a streaming k-way merge: at any time the heap holds at
+//! most one pending line per input file, so memory use is bounded by the
+//! number of inputs rather than the total log size.
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -22,6 +24,7 @@ const FILE_SUFFIX: &str = ".gz";
 pub struct MergeInput {
     pub path: PathBuf,
     pub node: String,
+    pub date: String,
 }
 
 /// Scan `dir` for files named `debug.log-<date>-<node>.gz`. Anything that
@@ -41,14 +44,15 @@ pub fn discover_inputs(dir: &Path) -> io::Result<Vec<MergeInput>> {
         let middle = &fname[FILE_PREFIX.len()..fname.len() - FILE_SUFFIX.len()];
         // `middle` looks like `<date>-<node>`; the node is everything after
         // the first `-` so node names containing dashes are preserved.
-        let Some((_date, node)) = middle.split_once('-') else {
+        let Some((date, node)) = middle.split_once('-') else {
             continue;
         };
-        if node.is_empty() {
+        if date.is_empty() || node.is_empty() {
             continue;
         }
         let node = node.to_string();
-        out.push(MergeInput { path, node });
+        let date = date.to_string();
+        out.push(MergeInput { path, node, date });
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
@@ -104,7 +108,7 @@ impl PartialOrd for HeapEntry {
     }
 }
 
-pub fn run(input_dir: &Path, output: &Path, level: i32) -> io::Result<()> {
+pub fn run(input_dir: &Path, output_dir: &Path, level: i32) -> io::Result<()> {
     let inputs = discover_inputs(input_dir)?;
     if inputs.is_empty() {
         return Err(io::Error::new(
@@ -116,6 +120,26 @@ pub fn run(input_dir: &Path, output: &Path, level: i32) -> io::Result<()> {
         ));
     }
 
+    std::fs::create_dir_all(output_dir)?;
+
+    // Group inputs by their filename `<date>` so each day merges into its own
+    // output file. `BTreeMap` keeps the days — and thus which file we write
+    // when — deterministic across runs.
+    let mut by_date: BTreeMap<String, Vec<MergeInput>> = BTreeMap::new();
+    for input in inputs {
+        by_date.entry(input.date.clone()).or_default().push(input);
+    }
+
+    for (date, group) in by_date {
+        let output = output_dir.join(format!("{FILE_PREFIX}{date}.zst"));
+        merge_day(group, &output, level)?;
+    }
+
+    Ok(())
+}
+
+/// Streaming k-way merge of one day's inputs into a single zstd file.
+fn merge_day(inputs: Vec<MergeInput>, output: &Path, level: i32) -> io::Result<()> {
     let mut readers: Vec<Reader> = inputs
         .into_iter()
         .map(Reader::open)

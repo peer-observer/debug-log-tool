@@ -77,11 +77,14 @@ fn merge_interleaves_by_timestamp() {
          2026-05-15T00:06:33 fourth-on-node2\n",
     );
 
-    let out = dir.join("merged.zst");
-    run_ok(bin().args(["merge", "-o"]).arg(&out).arg(&inputs), "merge");
+    let out_dir = dir.join("merged");
+    run_ok(
+        bin().args(["merge", "-o"]).arg(&out_dir).arg(&inputs),
+        "merge",
+    );
 
     assert_eq!(
-        read_zst(&out),
+        read_zst(&out_dir.join("debug.log-20260515.zst")),
         "node1 2026-05-15T00:06:30 first-on-node1\n\
          node2 2026-05-15T00:06:31.149660Z second-on-node2\n\
          node1 2026-05-15T00:06:32.500000Z third-on-node1\n\
@@ -96,8 +99,8 @@ fn merge_then_split_round_trips_synthetic_logs() {
     let split_out = dir.join("split-out");
     std::fs::create_dir_all(&orig).unwrap();
 
-    // node1 includes a continuation line (no leading timestamp) to exercise
-    // the "inherit previous timestamp" path on both sides.
+    // node1 includes a continuation line (no leading timestamp) to check that
+    // merge still prefixes it with `<node> ` and split reattaches it correctly.
     let node1 = "2026-05-15T00:06:30 first-on-node1\n\
                  \tcontinuation-line\n\
                  2026-05-15T00:06:32.500000Z third-on-node1\n";
@@ -107,10 +110,16 @@ fn merge_then_split_round_trips_synthetic_logs() {
     write_gz(&orig.join("debug.log-20260515-node1.gz"), node1);
     write_gz(&orig.join("debug.log-20260515-node2.gz"), node2);
 
-    let merged = dir.join("merged.zst");
-    run_ok(bin().args(["merge", "-o"]).arg(&merged).arg(&orig), "merge");
+    let merged_dir = dir.join("merged");
     run_ok(
-        bin().args(["split", "-o"]).arg(&split_out).arg(&merged),
+        bin().args(["merge", "-o"]).arg(&merged_dir).arg(&orig),
+        "merge",
+    );
+    run_ok(
+        bin()
+            .args(["split", "-o"])
+            .arg(&split_out)
+            .arg(merged_dir.join("debug.log-20260515.zst")),
         "split",
     );
 
@@ -121,6 +130,47 @@ fn merge_then_split_round_trips_synthetic_logs() {
     assert_eq!(
         read_gz(&split_out.join("debug.log-20260515-node2.gz")),
         node2,
+    );
+}
+
+/// A line whose timestamp crosses midnight into the next day must still
+/// round-trip byte-for-byte into its *filename's* day file. `split` keys the
+/// output date off the input filename, not the line timestamps, so the
+/// cross-midnight line stays where `merge` grouped it rather than leaking into
+/// a `debug.log-20260516-*` file.
+#[test]
+fn split_keys_date_off_filename_not_line_timestamps() {
+    let dir = test_dir("split_keys_date_off_filename_not_line_timestamps");
+    let orig = dir.join("orig");
+    let split_out = dir.join("split-out");
+    std::fs::create_dir_all(&orig).unwrap();
+
+    // Last line is timestamped on the 16th but lives in the 15th's file.
+    let node1 = "2026-05-15T23:59:59 late-on-the-15th\n\
+                 2026-05-16T00:00:01 just-past-midnight\n";
+    write_gz(&orig.join("debug.log-20260515-node1.gz"), node1);
+
+    let merged_dir = dir.join("merged");
+    run_ok(
+        bin().args(["merge", "-o"]).arg(&merged_dir).arg(&orig),
+        "merge",
+    );
+    run_ok(
+        bin()
+            .args(["split", "-o"])
+            .arg(&split_out)
+            .arg(merged_dir.join("debug.log-20260515.zst")),
+        "split",
+    );
+
+    assert_eq!(
+        read_gz(&split_out.join("debug.log-20260515-node1.gz")),
+        node1,
+        "cross-midnight line must round-trip into the filename's day",
+    );
+    assert!(
+        !split_out.join("debug.log-20260516-node1.gz").exists(),
+        "no line should leak into a next-day file",
     );
 }
 
@@ -155,17 +205,22 @@ fn round_trips_sample_fixtures_if_present() {
     }
 
     let dir = test_dir("round_trips_sample_fixtures_if_present");
-    let merged = dir.join("merged.zst");
+    let merged_dir = dir.join("merged");
     let split_out = dir.join("split-out");
 
     run_ok(
-        bin().args(["merge", "-o"]).arg(&merged).arg(&fixtures),
+        bin().args(["merge", "-o"]).arg(&merged_dir).arg(&fixtures),
         "merge (fixtures)",
     );
-    run_ok(
-        bin().args(["split", "-o"]).arg(&split_out).arg(&merged),
-        "split (fixtures)",
-    );
+    // merge emits one `debug.log-<date>.zst` per day; split each back into the
+    // shared output dir so every original fixture is reconstructed.
+    for entry in std::fs::read_dir(&merged_dir).unwrap() {
+        let merged = entry.unwrap().path();
+        run_ok(
+            bin().args(["split", "-o"]).arg(&split_out).arg(&merged),
+            "split (fixtures)",
+        );
+    }
 
     for input in &inputs {
         let name = input.file_name().unwrap();

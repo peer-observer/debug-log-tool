@@ -16,18 +16,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Interleave gzipped per-node debug.log files into one timestamp-ordered log.
+    /// Interleave gzipped per-node debug.log files into one timestamp-ordered
+    /// log per day.
     ///
     /// Every file in the directory matching `debug.log-<date>-<node>.gz` is
-    /// included. Each output line is prefixed with the `<node>` segment of its
-    /// source filename.
+    /// included. Files are grouped by their `<date>` segment, and each group is
+    /// merged into `debug.log-<date>.zst` in the output directory. Each output
+    /// line is prefixed with the `<node>` segment of its source filename.
     Merge {
         /// Directory containing the per-node gzipped logs.
         input_dir: PathBuf,
 
-        /// Output path for the zstd-compressed merged log.
-        #[arg(short, long)]
-        output: PathBuf,
+        /// Output directory for the per-day zstd-compressed merged logs.
+        #[arg(short, long = "output-dir")]
+        output_dir: PathBuf,
 
         /// zstd compression level (1 = fastest, 22 = highest ratio).
         #[arg(short = 'l', long, default_value_t = 19)]
@@ -35,8 +37,12 @@ enum Command {
     },
 
     /// Split a merged log back into per-node debug.log files.
+    ///
+    /// The `<date>` for the output filenames is taken from the input filename
+    /// (`debug.log-<date>.zst`), so a `merge` → `split` round-trip reproduces
+    /// each original `debug.log-<date>-<node>.gz` byte-for-byte.
     Split {
-        /// Input zstd-compressed merged log.
+        /// Input merged log, named `debug.log-<date>.zst`.
         input: PathBuf,
 
         /// Output directory for per-node files.
@@ -92,9 +98,9 @@ fn main() -> std::process::ExitCode {
     let result = match cli.command {
         Command::Merge {
             input_dir,
-            output,
+            output_dir,
             level,
-        } => merge::run(&input_dir, &output, level).map_err(|e| eprintln!("merge: {e}")),
+        } => merge::run(&input_dir, &output_dir, level).map_err(|e| eprintln!("merge: {e}")),
         Command::Split { input, output_dir } => {
             split::run(&input, &output_dir).map_err(|e| eprintln!("split: {e}"))
         }
