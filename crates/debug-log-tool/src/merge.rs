@@ -9,13 +9,16 @@
 //! number of inputs rather than the total log size.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::fs::File;
+use std::hash::Hasher;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use flate2::read::MultiGzDecoder;
 
+use crate::split;
 use crate::timestamp::{TimestampKey, parse_timestamp};
 
 const FILE_PREFIX: &str = "debug.log-";
@@ -65,15 +68,21 @@ struct Reader {
     // their own timestamp (continuation lines, multi-line errors) inherit it
     // so they stay glued to the entry they belong to.
     last_key: TimestampKey,
+    // In `--check` mode, a running hash of this file's raw decompressed content
+    // (every line as read). Compared against the hash of what `split` would
+    // reconstruct for this node to prove the round-trip. `None` when not
+    // checking so a normal merge pays no hashing cost.
+    input_hasher: Option<DefaultHasher>,
 }
 
 impl Reader {
-    fn open(input: MergeInput) -> io::Result<Self> {
+    fn open(input: MergeInput, check: bool) -> io::Result<Self> {
         let f = File::open(&input.path)?;
         Ok(Self {
             node: input.node,
             inner: BufReader::new(MultiGzDecoder::new(f)),
             last_key: TimestampKey::default(),
+            input_hasher: check.then(DefaultHasher::new),
         })
     }
 
@@ -81,6 +90,9 @@ impl Reader {
         let mut buf = String::new();
         if self.inner.read_line(&mut buf)? == 0 {
             return Ok(None);
+        }
+        if let Some(h) = self.input_hasher.as_mut() {
+            h.write(buf.as_bytes());
         }
         let key = parse_timestamp(&buf).unwrap_or(self.last_key);
         self.last_key = key;
@@ -108,7 +120,7 @@ impl PartialOrd for HeapEntry {
     }
 }
 
-pub fn run(input_dir: &Path, output_dir: &Path, level: i32) -> io::Result<()> {
+pub fn run(input_dir: &Path, output_dir: Option<&Path>, level: i32, check: bool) -> io::Result<()> {
     let inputs = discover_inputs(input_dir)?;
     if inputs.is_empty() {
         return Err(io::Error::new(
@@ -119,8 +131,12 @@ pub fn run(input_dir: &Path, output_dir: &Path, level: i32) -> io::Result<()> {
             ),
         ));
     }
-
-    std::fs::create_dir_all(output_dir)?;
+    if output_dir.is_none() && !check {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "merge: --output-dir is required unless --check is given",
+        ));
+    }
 
     // Group inputs by their filename `<date>` so each day merges into its own
     // output file. `BTreeMap` keeps the days — and thus which file we write
@@ -130,20 +146,74 @@ pub fn run(input_dir: &Path, output_dir: &Path, level: i32) -> io::Result<()> {
         by_date.entry(input.date.clone()).or_default().push(input);
     }
 
-    for (date, group) in by_date {
-        let output = output_dir.join(format!("{FILE_PREFIX}{date}.zst"));
-        merge_day(group, &output, level)?;
+    if let Some(dir) = output_dir {
+        std::fs::create_dir_all(dir)?;
+    }
+    if check {
+        let scope = if output_dir.is_some() {
+            "verifying merge → split round-trip (writing output too)"
+        } else {
+            "verifying merge → split round-trip (no files written)"
+        };
+        println!("merge --check: {scope}");
     }
 
+    let mut total = 0usize;
+    let mut ok_count = 0usize;
+    for (date, group) in by_date {
+        let output = output_dir.map(|dir| dir.join(format!("{FILE_PREFIX}{date}.zst")));
+        for (node, lines, ok) in merge_day(group, output.as_deref(), level, check)? {
+            total += 1;
+            if ok {
+                ok_count += 1;
+            }
+            let status = if ok { "OK  " } else { "FAIL" };
+            println!("  {date}  {node:<14} {status}  {lines} lines");
+        }
+    }
+
+    if check {
+        println!("check: {ok_count}/{total} files round-trip identical");
+        if ok_count != total {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} file(s) failed the round-trip check", total - ok_count),
+            ));
+        }
+    }
     Ok(())
 }
 
-/// Streaming k-way merge of one day's inputs into a single zstd file.
-fn merge_day(inputs: Vec<MergeInput>, output: &Path, level: i32) -> io::Result<()> {
+/// Streaming k-way merge of one day's inputs. Writes the interleaved,
+/// node-prefixed stream to `output` as zstd when `output` is `Some`, and/or —
+/// when `check` is set — verifies the round-trip by comparing, per node, a hash
+/// of the ingested content against a hash of what the real `split` parser
+/// reconstructs from the merged stream. Both can run in the same pass.
+///
+/// Returns `(node, line_count, ok)` per input file (sorted by node) when
+/// `check` is set, otherwise an empty vec.
+fn merge_day(
+    inputs: Vec<MergeInput>,
+    output: Option<&Path>,
+    level: i32,
+    check: bool,
+) -> io::Result<Vec<(String, u64, bool)>> {
     let mut readers: Vec<Reader> = inputs
         .into_iter()
-        .map(Reader::open)
+        .map(|i| Reader::open(i, check))
         .collect::<io::Result<_>>()?;
+
+    // Per-node hash of the split-reconstructed content, plus a line count.
+    // Pre-seed every node so an empty input file (which emits nothing) still
+    // compares as the hash of empty content rather than a missing entry.
+    let mut roundtrip: HashMap<String, (DefaultHasher, u64)> = HashMap::new();
+    if check {
+        for r in &readers {
+            roundtrip
+                .entry(r.node.clone())
+                .or_insert_with(|| (DefaultHasher::new(), 0));
+        }
+    }
 
     let mut heap: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::new();
     for (idx, r) in readers.iter_mut().enumerate() {
@@ -156,14 +226,38 @@ fn merge_day(inputs: Vec<MergeInput>, output: &Path, level: i32) -> io::Result<(
         }
     }
 
-    let out = File::create(output)?;
-    let mut enc = zstd::Encoder::new(out, level)?;
+    let mut encoder = match output {
+        Some(path) => Some(zstd::Encoder::new(File::create(path)?, level)?),
+        None => None,
+    };
 
+    let mut merged = String::new();
+    let mut line_no = 0u64;
     while let Some(Reverse(entry)) = heap.pop() {
-        let node = readers[entry.reader_idx].node.as_bytes();
-        enc.write_all(node)?;
-        enc.write_all(b" ")?;
-        enc.write_all(entry.line.as_bytes())?;
+        line_no += 1;
+        {
+            let node = &readers[entry.reader_idx].node;
+            if let Some(enc) = encoder.as_mut() {
+                enc.write_all(node.as_bytes())?;
+                enc.write_all(b" ")?;
+                enc.write_all(entry.line.as_bytes())?;
+            }
+            if check {
+                // Reconstruct exactly the bytes `merge` emits for this line.
+                merged.clear();
+                merged.push_str(node);
+                merged.push(' ');
+                merged.push_str(&entry.line);
+            }
+        }
+        if check {
+            // Route it back through the real `split` parser — the same code
+            // path the `split` subcommand uses — and hash what it recovers.
+            let (node, rest) = split::split_prefix(&merged, line_no)?;
+            let (hasher, count) = roundtrip.entry(node.to_string()).or_default();
+            hasher.write(rest.as_bytes());
+            *count += 1;
+        }
         if let Some((key, line)) = readers[entry.reader_idx].next_line()? {
             heap.push(Reverse(HeapEntry {
                 key,
@@ -173,6 +267,24 @@ fn merge_day(inputs: Vec<MergeInput>, output: &Path, level: i32) -> io::Result<(
         }
     }
 
-    enc.finish()?;
-    Ok(())
+    if let Some(enc) = encoder {
+        enc.finish()?;
+    }
+
+    if !check {
+        return Ok(Vec::new());
+    }
+    let mut results = Vec::with_capacity(readers.len());
+    for r in &readers {
+        let input_hash = r
+            .input_hasher
+            .as_ref()
+            .expect("check mode enables input hashing")
+            .finish();
+        let (hasher, count) = roundtrip.get(&r.node).expect("node pre-seeded above");
+        let ok = hasher.finish() == input_hash;
+        results.push((r.node.clone(), *count, ok));
+    }
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(results)
 }

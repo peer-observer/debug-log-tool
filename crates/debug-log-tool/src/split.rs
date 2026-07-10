@@ -36,11 +36,7 @@ pub fn run(input: &Path, output_dir: &Path) -> io::Result<()> {
         }
         line_no += 1;
 
-        let Some(sp) = buf.find(' ') else {
-            return Err(invalid(format!("line {line_no}: missing `<node> ` prefix")));
-        };
-        let node = &buf[..sp];
-        let rest = &buf[sp + 1..];
+        let (node, rest) = split_prefix(&buf, line_no)?;
 
         if !writers.contains_key(node) {
             let path = output_dir.join(format!("{FILE_PREFIX}{date}-{node}.gz"));
@@ -60,6 +56,17 @@ pub fn run(input: &Path, output_dir: &Path) -> io::Result<()> {
         w.finish()?;
     }
     Ok(())
+}
+
+/// Split a merged line `<node> <rest>` into its node name and remainder,
+/// where `<rest>` is the original per-node log line. This is the exact inverse
+/// of the `<node> ` prefix `merge` prepends, and is shared with `merge --check`
+/// so the round-trip self-check exercises the same parsing the real split does.
+pub(crate) fn split_prefix(line: &str, line_no: u64) -> io::Result<(&str, &str)> {
+    let Some(sp) = line.find(' ') else {
+        return Err(invalid(format!("line {line_no}: missing `<node> ` prefix")));
+    };
+    Ok((&line[..sp], &line[sp + 1..]))
 }
 
 /// Recover the `<date>` from a `debug.log-<date>.zst` input filename.

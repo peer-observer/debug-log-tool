@@ -28,12 +28,21 @@ enum Command {
         input_dir: PathBuf,
 
         /// Output directory for the per-day zstd-compressed merged logs.
+        /// Required unless `--check` is given.
         #[arg(short, long = "output-dir")]
-        output_dir: PathBuf,
+        output_dir: Option<PathBuf>,
 
         /// zstd compression level (1 = fastest, 22 = highest ratio).
         #[arg(short = 'l', long, default_value_t = 19)]
         level: i32,
+
+        /// Verify the merge → split round-trip by comparing a content hash of
+        /// each input file against a hash of what `split` reconstructs. Exits
+        /// non-zero if any file fails to round-trip. Combine with --output-dir
+        /// to write the merged output and verify it in the same pass; on its
+        /// own it verifies without writing anything.
+        #[arg(long)]
+        check: bool,
     },
 
     /// Split a merged log back into per-node debug.log files.
@@ -100,7 +109,9 @@ fn main() -> std::process::ExitCode {
             input_dir,
             output_dir,
             level,
-        } => merge::run(&input_dir, &output_dir, level).map_err(|e| eprintln!("merge: {e}")),
+            check,
+        } => merge::run(&input_dir, output_dir.as_deref(), level, check)
+            .map_err(|e| eprintln!("merge: {e}")),
         Command::Split { input, output_dir } => {
             split::run(&input, &output_dir).map_err(|e| eprintln!("split: {e}"))
         }

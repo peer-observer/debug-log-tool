@@ -133,6 +133,134 @@ fn merge_then_split_round_trips_synthetic_logs() {
     );
 }
 
+/// `merge --check` verifies the round-trip via content hashes, writes nothing,
+/// and reports one line per input file plus a summary.
+#[test]
+fn merge_check_verifies_round_trip_without_writing() {
+    let dir = test_dir("merge_check_verifies_round_trip_without_writing");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    // Two days so the check exercises grouping; node1 has a continuation line.
+    write_gz(
+        &inputs.join("debug.log-20260515-node1.gz"),
+        "2026-05-15T00:06:30 first-on-node1\n\
+         \tcontinuation-line\n\
+         2026-05-15T00:06:32.500000Z third-on-node1\n",
+    );
+    write_gz(
+        &inputs.join("debug.log-20260515-node2.gz"),
+        "2026-05-15T00:06:31.149660Z second-on-node2\n",
+    );
+    write_gz(
+        &inputs.join("debug.log-20260516-node1.gz"),
+        "2026-05-16T00:00:00 next-day-node1\n",
+    );
+
+    let out = bin()
+        .args(["merge", "--check"])
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge --check");
+    assert!(
+        out.status.success(),
+        "check should pass: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // 3 input files, all round-tripping, and no lines dropped/duplicated.
+    assert!(
+        stdout.contains("3/3 files round-trip identical"),
+        "summary missing: {stdout}"
+    );
+    assert!(!stdout.contains("FAIL"), "unexpected failure: {stdout}");
+    // Nothing was written: no output dir was passed and none was created.
+    assert!(!dir.join("merged").exists());
+}
+
+/// `merge --check` combined with `--output-dir` writes the merged output and
+/// verifies the round-trip in the same pass. The written file must both exist
+/// and split back to the originals.
+#[test]
+fn merge_check_with_output_writes_and_verifies() {
+    let dir = test_dir("merge_check_with_output_writes_and_verifies");
+    let orig = dir.join("orig");
+    std::fs::create_dir_all(&orig).unwrap();
+
+    let node1 = "2026-05-15T00:06:30 first-on-node1\n\
+                 2026-05-15T00:06:32.500000Z third-on-node1\n";
+    let node2 = "2026-05-15T00:06:31.149660Z second-on-node2\n";
+    write_gz(&orig.join("debug.log-20260515-node1.gz"), node1);
+    write_gz(&orig.join("debug.log-20260515-node2.gz"), node2);
+
+    let merged_dir = dir.join("merged");
+    let out = bin()
+        .args(["merge", "--check", "-o"])
+        .arg(&merged_dir)
+        .arg(&orig)
+        .output()
+        .expect("spawn merge --check -o");
+    assert!(
+        out.status.success(),
+        "combined write+check should pass: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("writing output too"),
+        "scope note: {stdout}"
+    );
+    assert!(
+        stdout.contains("2/2 files round-trip identical"),
+        "summary: {stdout}"
+    );
+
+    // The merged file was actually written and splits back to the originals.
+    let merged = merged_dir.join("debug.log-20260515.zst");
+    assert!(merged.exists(), "merged output should have been written");
+    let split_out = dir.join("split-out");
+    run_ok(
+        bin().args(["split", "-o"]).arg(&split_out).arg(&merged),
+        "split",
+    );
+    assert_eq!(
+        read_gz(&split_out.join("debug.log-20260515-node1.gz")),
+        node1
+    );
+    assert_eq!(
+        read_gz(&split_out.join("debug.log-20260515-node2.gz")),
+        node2
+    );
+}
+
+/// Without `--check`, `merge` still requires an output directory and fails
+/// cleanly (non-zero exit) when one isn't given.
+#[test]
+fn merge_without_output_dir_or_check_errors() {
+    let dir = test_dir("merge_without_output_dir_or_check_errors");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+    write_gz(
+        &inputs.join("debug.log-20260515-node1.gz"),
+        "2026-05-15T00:06:30 only-line\n",
+    );
+
+    let out = bin()
+        .arg("merge")
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge");
+    assert!(
+        !out.status.success(),
+        "merge with no -o/--check should fail"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--output-dir is required"),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// A line whose timestamp crosses midnight into the next day must still
 /// round-trip byte-for-byte into its *filename's* day file. `split` keys the
 /// output date off the input filename, not the line timestamps, so the
