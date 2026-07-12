@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.dependencies]
 flate2 = "1"
-zstd = "0.13"
+zstd = { version = "0.13", features = ["zstdmt"] }
 
 [profile.release]
 lto = "thin"

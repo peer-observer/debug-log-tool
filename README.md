@@ -31,6 +31,13 @@ debug-log-tool merge -o out/ /path/to/logs/
 
 - `-o, --output-dir <DIR>` — where the per-day `.zst` files are written.
 - `-l, --level <N>` — zstd level, 1 (fastest) to 22 (smallest). Default 19.
+- `-j, --jobs <N>` — zstd compression worker threads. Defaults to the number
+  of CPU cores; `1` disables multithreaded compression. Input files are always
+  decompressed and parsed on one thread each, independent of this setting.
+
+The merged *content* is identical whatever `--jobs` is set to, but the
+compressed bytes differ between single- and multithreaded compression, so
+don't compare `.zst` files by hash — compare their decompressed content.
 
 #### `--check` — verify the round-trip
 
@@ -96,6 +103,7 @@ debug-log-tool templates out/debug.log-20251115.zst
 
 ## Streaming
 
-Both `merge` and `split` stream: `merge` is a k-way merge holding at most one
-pending line per input, and `split` dispatches line by line. Neither loads a
-whole log into memory, so they work on logs far larger than RAM.
+Both `merge` and `split` stream: `merge` decompresses each input on its own
+thread, feeding small bounded batches of lines into a single-threaded k-way
+merge, and `split` dispatches line by line. Neither loads a whole log into
+memory, so they work on logs far larger than RAM.

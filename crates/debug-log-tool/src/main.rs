@@ -36,6 +36,12 @@ enum Command {
         #[arg(short = 'l', long, default_value_t = 19)]
         level: i32,
 
+        /// Number of zstd compression worker threads; 1 disables multithreaded
+        /// compression. Input files are always decompressed and parsed on one
+        /// thread each, regardless of this setting.
+        #[arg(short = 'j', long, default_value_t = default_jobs())]
+        jobs: u32,
+
         /// Verify the merge → split round-trip by comparing a content hash of
         /// each input file against a hash of what `split` reconstructs. Exits
         /// non-zero if any file fails to round-trip. Combine with --output-dir
@@ -102,6 +108,10 @@ enum Command {
     },
 }
 
+fn default_jobs() -> u32 {
+    std::thread::available_parallelism().map_or(1, |n| n.get() as u32)
+}
+
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -109,8 +119,9 @@ fn main() -> std::process::ExitCode {
             input_dir,
             output_dir,
             level,
+            jobs,
             check,
-        } => merge::run(&input_dir, output_dir.as_deref(), level, check)
+        } => merge::run(&input_dir, output_dir.as_deref(), level, jobs, check)
             .map_err(|e| eprintln!("merge: {e}")),
         Command::Split { input, output_dir } => {
             split::run(&input, &output_dir).map_err(|e| eprintln!("split: {e}"))
