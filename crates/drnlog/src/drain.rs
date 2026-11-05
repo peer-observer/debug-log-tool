@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use crate::tokenizer::{Token, TokenKind};
 
 /// One position in a cluster template.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Slot {
     /// Literal text — matches only the same literal.
     Text(String),
@@ -141,7 +141,7 @@ impl Drain {
         }
 
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self.next_id.saturating_add(1);
         let template: Vec<Slot> = tokens.iter().map(Slot::from_token).collect();
         leaf.push(Cluster {
             id,
@@ -156,7 +156,7 @@ impl Drain {
     /// Updates `next_id` so future adds don't collide with loaded ids.
     pub fn insert_cluster(&mut self, cluster: Cluster) {
         if cluster.id >= self.next_id {
-            self.next_id = cluster.id + 1;
+            self.next_id = cluster.id.saturating_add(1);
         }
         let key = self.route_key_from_slots(&cluster.template);
         self.tree.entry(key).or_default().push(cluster);
@@ -428,5 +428,19 @@ mod tests {
         let clusters: Vec<&Cluster> = d.clusters().collect();
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].count, 3);
+    }
+
+    #[test]
+    fn an_id_at_the_top_of_the_range_does_not_overflow() {
+        let mut d = Drain::new(4, 0.5);
+        d.insert_cluster(Cluster {
+            id: u64::MAX,
+            template: vec![Slot::Text("loaded".into())],
+            count: 1,
+            first_seen: None,
+            last_seen: None,
+        });
+        d.add_tokens(&line("something else entirely"), None);
+        assert_eq!(d.clusters().count(), 2);
     }
 }
