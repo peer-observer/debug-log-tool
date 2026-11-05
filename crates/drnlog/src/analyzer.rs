@@ -59,8 +59,9 @@ impl Analyzer {
     }
 
     /// Serialize to JSONL — one `_meta` header line, then one cluster per
-    /// line. Use [`save_atomic`](Self::save_atomic) to write a file safely
-    /// (this method is for callers that already own a writer).
+    /// line, sorted by `(category, id)` so the same input always writes the
+    /// same bytes. Use [`save_atomic`](Self::save_atomic) to write a file
+    /// safely (this method is for callers that already own a writer).
     pub fn save<W: Write>(&self, mut w: W) -> io::Result<()> {
         writeln!(
             w,
@@ -68,7 +69,9 @@ impl Analyzer {
             self.depth,
             json_float(self.threshold),
         )?;
-        for (cat, c) in self.templates() {
+        let mut clusters: Vec<(Option<&str>, &Cluster)> = self.templates().collect();
+        clusters.sort_by(|(cat_a, a), (cat_b, b)| cat_a.cmp(cat_b).then(a.id.cmp(&b.id)));
+        for (cat, c) in clusters {
             write_cluster_line(&mut w, cat, c)?;
         }
         Ok(())
@@ -536,5 +539,41 @@ mod tests {
         assert_eq!(b.templates().count(), 1);
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Saved clusters come out sorted by (category, id), not in hash order.
+    #[test]
+    fn save_orders_clusters_by_category_and_id() {
+        let mut a = Analyzer::new(4, 0.5);
+        for n in 0..12 {
+            a.ingest_line(&format!(
+                "2026-06-06T12:00:00Z [net] alpha{n} one two three"
+            ));
+            a.ingest_line(&format!(
+                "2026-06-06T12:00:00Z [bench] beta{n} one two three"
+            ));
+            a.ingest_line(&format!("2026-06-06T12:00:00Z [mempool] gamma{n} one two"));
+            a.ingest_line(&format!("no timestamp here {n} one two"));
+        }
+        assert!(
+            a.templates().count() > 12,
+            "need enough clusters to shuffle"
+        );
+
+        let mut buf = Vec::new();
+        a.save(&mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+
+        let keys: Vec<(Option<String>, u64)> = text
+            .lines()
+            .skip(1)
+            .map(|l| {
+                let (cat, cluster) = parse_cluster_line(l).unwrap();
+                (cat, cluster.id)
+            })
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted, "save output must be sorted by (category, id)");
     }
 }

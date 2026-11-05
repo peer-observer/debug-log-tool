@@ -518,3 +518,39 @@ fn merge_terminates_unterminated_final_line() {
          2026-05-15T00:06:32 third-on-node1\n",
     );
 }
+
+/// Two `--save-state` runs over the same input must write identical files.
+#[test]
+fn save_state_is_byte_identical_across_runs() {
+    let dir = test_dir("save_state_is_byte_identical_across_runs");
+    let fixture = dir.join("debug.log");
+
+    // Enough categories and templates that any hash ordering would show up.
+    let mut content = String::new();
+    for i in 1..=20 {
+        for cat in ["net", "mempool", "validation", "bench", "addrman"] {
+            content.push_str(&format!(
+                "2026-06-06T12:34:56Z [{cat}] event-{i} happened on peer={i}\n"
+            ));
+        }
+        content.push_str(&format!("\tcontinuation line {i} with no timestamp\n"));
+    }
+    std::fs::write(&fixture, &content).unwrap();
+
+    let state_a = dir.join("a.jsonl");
+    let state_b = dir.join("b.jsonl");
+    for state in [&state_a, &state_b] {
+        run_ok(
+            bin()
+                .args(["templates", "--save-state"])
+                .arg(state)
+                .arg(&fixture),
+            "templates --save-state",
+        );
+    }
+
+    let a = std::fs::read_to_string(&state_a).unwrap();
+    let b = std::fs::read_to_string(&state_b).unwrap();
+    assert!(a.lines().count() > 20, "expected many clusters: {a}");
+    assert_eq!(a, b, "state files must be reproducible across runs");
+}
