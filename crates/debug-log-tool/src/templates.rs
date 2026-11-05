@@ -2,15 +2,16 @@
 //! input file, then render a per-category template/count report.
 //!
 //! Compression of the input is detected by sniffing the first four bytes:
-//! zstd (28 B5 2F FD), gzip (1F 8B), or plain. For zstd input (merged
-//! log produced by `merge`) the leading `<node> ` prefix is stripped from
-//! each line before being fed into the analyzer.
+//! zstd (28 B5 2F FD), gzip (1F 8B), or plain. Whether the lines carry the
+//! `<node> ` prefix `merge` adds is decided from the first timestamped line,
+//! so a merged log and a per-node one both work in any of the three.
 
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
+use crate::timestamp::parse_timestamp;
 use drnlog::{Analyzer, Cluster, Slot};
 use flate2::read::MultiGzDecoder;
 
@@ -35,7 +36,10 @@ pub fn run(input: Option<&Path>, opts: TemplatesOpts) -> io::Result<()> {
     };
 
     if let Some(path) = input {
-        let (kind, mut reader) = open_input(path)?;
+        let mut reader = open_input(path)?;
+        // `Some(true)` once a line shows the `<node> ` prefix, `Some(false)`
+        // once one shows it absent.
+        let mut prefixed: Option<bool> = None;
         let mut buf: Vec<u8> = Vec::new();
         loop {
             buf.clear();
@@ -46,8 +50,11 @@ pub fn run(input: Option<&Path>, opts: TemplatesOpts) -> io::Result<()> {
             // shouldn't abort the whole run.
             let decoded = String::from_utf8_lossy(&buf);
             let line = decoded.trim_end_matches(['\r', '\n']);
-            let content = match kind {
-                InputKind::Zstd => strip_node_prefix(line),
+            if prefixed.is_none() {
+                prefixed = sniff_node_prefix(line);
+            }
+            let content = match prefixed {
+                Some(true) => strip_node_prefix(line),
                 _ => line,
             };
             analyzer.ingest_line(content);
@@ -63,14 +70,8 @@ pub fn run(input: Option<&Path>, opts: TemplatesOpts) -> io::Result<()> {
     render(&analyzer, &opts, &mut w)
 }
 
-#[derive(Clone, Copy)]
-enum InputKind {
-    Zstd,
-    Gzip,
-    Plain,
-}
-
-fn open_input(path: &Path) -> io::Result<(InputKind, Box<dyn BufRead>)> {
+/// Open `path`, transparently decompressing zstd or gzip.
+fn open_input(path: &Path) -> io::Result<Box<dyn BufRead>> {
     let mut f = File::open(path)?;
     let mut magic = [0u8; 4];
     let n = f.read(&mut magic)?;
@@ -78,18 +79,25 @@ fn open_input(path: &Path) -> io::Result<(InputKind, Box<dyn BufRead>)> {
     let prefix = &magic[..n];
 
     if prefix.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
-        Ok((
-            InputKind::Zstd,
-            Box::new(BufReader::new(zstd::Decoder::new(f)?)),
-        ))
+        Ok(Box::new(BufReader::new(zstd::Decoder::new(f)?)))
     } else if prefix.starts_with(&[0x1F, 0x8B]) {
-        Ok((
-            InputKind::Gzip,
-            Box::new(BufReader::new(MultiGzDecoder::new(f))),
-        ))
+        Ok(Box::new(BufReader::new(MultiGzDecoder::new(f))))
     } else {
-        Ok((InputKind::Plain, Box::new(BufReader::new(f))))
+        Ok(Box::new(BufReader::new(f)))
     }
+}
+
+/// Does this line carry a `<node> ` prefix? `None` when the line has no
+/// timestamp either way and so says nothing about the file.
+fn sniff_node_prefix(line: &str) -> Option<bool> {
+    if parse_timestamp(line.as_bytes()).is_some() {
+        return Some(false);
+    }
+    let (node, rest) = line.split_once(' ')?;
+    if node.is_empty() {
+        return None;
+    }
+    parse_timestamp(rest.as_bytes()).is_some().then_some(true)
 }
 
 /// Strip the leading `<node> ` prefix produced by `merge`. If the line
