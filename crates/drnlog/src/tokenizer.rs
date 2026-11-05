@@ -294,8 +294,8 @@ const RECOGNIZERS: &[Classifier] = &[
     recognize_peer_id,
     recognize_block_height,
     recognize_byte_count,
-    recognize_duration,
     recognize_hash,
+    recognize_duration,
     recognize_ipv6_port,
     recognize_ipv6,
     recognize_ipv4_port,
@@ -885,5 +885,14 @@ mod tests {
             "[ <IPv6> ] :99999",
             "port out of range"
         );
+    }
+
+    #[test]
+    fn a_hash_outranks_a_duration() {
+        // 63 digits plus `d` is both a valid hash and a plausible "N days".
+        let hash = format!("{}d", "1".repeat(63));
+        assert_eq!(kinds(&hash), vec![TokenKind::Hash]);
+        // One char short of a hash, so the duration reading stands.
+        assert_eq!(kinds(&hash[1..]), vec![TokenKind::Duration]);
     }
 }
