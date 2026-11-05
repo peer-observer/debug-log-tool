@@ -1009,7 +1009,15 @@ fn a_failed_merge_leaves_no_output_behind() {
 
     // The earlier good output survived, and no temp file was left lying around.
     assert_eq!(read_zst(&merged), format!("good {good}"));
-    assert!(!merged_dir.join("debug.log-20260515.zst.tmp").exists());
+    let leftovers: Vec<_> = std::fs::read_dir(&merged_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
 
     // Same from scratch: a failed first run writes nothing at all.
     let fresh = dir.join("fresh");
@@ -1471,4 +1479,51 @@ fn randomized_merge_split_round_trip() {
             assert_eq!(count, expected, "seed {seed}: line count for {compact}");
         }
     }
+}
+
+/// Two merges into the same output directory must not share a temp file, or
+/// one could rename the other's half-written bytes into place.
+#[test]
+fn concurrent_merges_do_not_share_a_temp_file() {
+    let dir = test_dir("concurrent_merges_do_not_share_a_temp_file");
+    let inputs = dir.join("inputs");
+    let merged_dir = dir.join("merged");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    let mut content = String::new();
+    for i in 0..5_000 {
+        content.push_str(&format!(
+            "2026-05-15T00:00:{:02}.{i:06}Z line-{i}\n",
+            i % 60
+        ));
+    }
+    write_gz(&inputs.join("debug.log-20260515-node1.gz"), &content);
+
+    let mut children: Vec<_> = (0..4)
+        .map(|_| {
+            bin()
+                .args(["merge", "-o"])
+                .arg(&merged_dir)
+                .arg(&inputs)
+                .spawn()
+                .expect("spawn merge")
+        })
+        .collect();
+    for child in &mut children {
+        assert!(child.wait().unwrap().success());
+    }
+
+    // Whichever run renamed last, the file is one complete merge.
+    let merged = read_zst(&merged_dir.join("debug.log-20260515.zst"));
+    assert_eq!(merged.lines().count(), 5_000);
+    assert!(merged.starts_with("node1 2026-05-15T00:00:00.000000Z line-0\n"));
+    let leftovers: Vec<_> = std::fs::read_dir(&merged_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
 }
