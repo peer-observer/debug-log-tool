@@ -1268,3 +1268,207 @@ fn a_multi_member_gzip_is_read_whole() {
          rotated 2026-05-15T00:00:03 member-two\n",
     );
 }
+
+/// A timestamp as the merge orders it: whole seconds and fractional seconds
+/// have to compare against each other, so the fraction is scaled to nanos
+/// rather than compared as text.
+fn timestamp_key(ts: &str) -> (String, u64) {
+    match ts.split_once('.') {
+        Some((head, fraction)) => {
+            let digits: String = fraction.chars().take_while(char::is_ascii_digit).collect();
+            let nanos = digits.parse::<u64>().unwrap() * 10u64.pow(9 - digits.len() as u32);
+            (head.to_string(), nanos)
+        }
+        None => (ts.to_string(), 0),
+    }
+}
+
+/// Deterministic little PRNG so a failure is reproducible from the seed.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.0 >> 33
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Builds one node's log. Timestamps only move forwards — a k-way merge can
+/// only order inputs that are each already chronological — but often stand
+/// still, so ties are common. Mixed in are the line shapes that have broken
+/// things before.
+fn random_log(rng: &mut Rng, date: &str, lines: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut second = 0u64;
+    let mut micros = 0u64;
+    for i in 0..lines {
+        let shape = rng.below(10);
+        // Whole-second lines read as .000000, so they can only follow a
+        // fractional one on a later second.
+        let whole = shape != 0 && !(4..=7).contains(&shape);
+        if whole && (micros != 0 || rng.below(3) != 0) {
+            second += 1 + rng.below(3);
+            micros = 0;
+        } else if !whole && rng.below(3) != 0 {
+            micros += 1 + rng.below(1000);
+        }
+        let (m, s) = (second / 60, second % 60);
+        match shape {
+            // Continuation line, no timestamp of its own.
+            0 => out.extend_from_slice(format!("\tcontinuation {i}\n").as_bytes()),
+            1..=3 => {
+                out.extend_from_slice(format!("{date}T00:{m:02}:{s:02} whole-{i}\n").as_bytes())
+            }
+            4..=7 => out.extend_from_slice(
+                format!(
+                    "{date}T00:{m:02}:{s:02}.{micros:06}Z frac-{i} peer={}\n",
+                    rng.below(500)
+                )
+                .as_bytes(),
+            ),
+            8 => out.extend_from_slice(format!("{date}T00:{m:02}:{s:02} crlf-{i}\r\n").as_bytes()),
+            // Bytes that are not valid UTF-8, plus a NUL.
+            _ => {
+                out.extend_from_slice(format!("{date}T00:{m:02}:{s:02} raw-{i} ").as_bytes());
+                out.extend_from_slice(&[0xff, 0x00, 0xc3, 0x28]);
+                out.push(b'\n');
+            }
+        }
+    }
+    out
+}
+
+/// merge -> split over randomly generated messy logs: every input file has to
+/// come back byte-identical, every line has to survive exactly once, and the
+/// merged stream has to be ordered.
+#[test]
+fn randomized_merge_split_round_trip() {
+    for seed in 1..=25u64 {
+        let dir = test_dir(&format!("randomized_merge_split_round_trip-{seed}"));
+        let orig = dir.join("orig");
+        let split_out = dir.join("split-out");
+        std::fs::create_dir_all(&orig).unwrap();
+
+        let mut rng = Rng(seed);
+        let node_count = 2 + rng.below(5) as usize;
+        let dates = ["2026-05-15", "2026-05-16"];
+        let mut written: Vec<(String, String, Vec<u8>)> = Vec::new();
+
+        for n in 0..node_count {
+            let node = format!("node{n}");
+            for date in dates {
+                let lines = rng.below(40) as usize;
+                let mut content = random_log(&mut rng, date, lines);
+                // Every few files, drop the final newline.
+                if !content.is_empty() && rng.below(4) == 0 {
+                    content.pop();
+                }
+                let compact = date.replace('-', "");
+                let f = std::fs::File::create(orig.join(format!("debug.log-{compact}-{node}.gz")))
+                    .unwrap();
+                let mut enc = GzEncoder::new(f, Compression::default());
+                enc.write_all(&content).unwrap();
+                enc.finish().unwrap();
+                written.push((compact, node.clone(), content));
+            }
+        }
+
+        let merged_dir = dir.join("merged");
+        let out = bin()
+            .args(["merge", "--check", "-o"])
+            .arg(&merged_dir)
+            .arg(&orig)
+            .output()
+            .expect("spawn merge");
+        assert!(
+            out.status.success(),
+            "seed {seed}: merge failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains(&format!(
+                "{0}/{0} files round-trip identical",
+                written.len()
+            )),
+            "seed {seed}: {stdout}"
+        );
+
+        for date in dates {
+            let compact = date.replace('-', "");
+            run_ok(
+                bin()
+                    .args(["split", "-o"])
+                    .arg(&split_out)
+                    .arg(merged_dir.join(format!("debug.log-{compact}.zst"))),
+                "split",
+            );
+        }
+
+        for (compact, node, content) in &written {
+            let path = split_out.join(format!("debug.log-{compact}-{node}.gz"));
+            if content.is_empty() {
+                assert!(!path.exists(), "seed {seed}: empty log produced a file");
+                continue;
+            }
+            let f = std::fs::File::open(&path)
+                .unwrap_or_else(|e| panic!("seed {seed}: {}: {e}", path.display()));
+            let mut got = Vec::new();
+            MultiGzDecoder::new(f).read_to_end(&mut got).unwrap();
+            // merge terminates a last line that had no newline; otherwise the
+            // bytes have to match exactly.
+            let mut want = content.clone();
+            if want.last() != Some(&b'\n') {
+                want.push(b'\n');
+            }
+            assert_eq!(
+                got, want,
+                "seed {seed}: {compact}-{node} did not round-trip",
+            );
+        }
+
+        // Timestamps in the merged stream never go backwards, and no line is
+        // lost or duplicated.
+        for date in dates {
+            let compact = date.replace('-', "");
+            let f =
+                std::fs::File::open(merged_dir.join(format!("debug.log-{compact}.zst"))).unwrap();
+            let mut reader = std::io::BufReader::new(zstd::Decoder::new(f).unwrap());
+            let mut line = Vec::new();
+            let mut previous = (String::new(), 0u64);
+            let mut count = 0usize;
+            loop {
+                line.clear();
+                if reader.read_until(b'\n', &mut line).unwrap() == 0 {
+                    break;
+                }
+                count += 1;
+                let text = String::from_utf8_lossy(&line);
+                let rest = text.split_once(' ').expect("node prefix").1;
+                if let Some(ts) = rest.split_whitespace().next()
+                    && ts.starts_with(date)
+                {
+                    let key = timestamp_key(ts);
+                    assert!(
+                        key >= previous,
+                        "seed {seed}: {ts} came after {}",
+                        previous.0
+                    );
+                    previous = key;
+                }
+            }
+            let expected: usize = written
+                .iter()
+                .filter(|(d, _, _)| d == &compact)
+                .map(|(_, _, c)| {
+                    c.iter().filter(|&&b| b == b'\n').count()
+                        + usize::from(!c.is_empty() && c.last() != Some(&b'\n'))
+                })
+                .sum();
+            assert_eq!(count, expected, "seed {seed}: line count for {compact}");
+        }
+    }
+}
