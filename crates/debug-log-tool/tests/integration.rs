@@ -6,7 +6,7 @@
 //! those; it skips cleanly when no fixtures are present so the test suite
 //! stays green on a fresh checkout.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -1025,4 +1025,246 @@ fn a_failed_merge_leaves_no_output_behind() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert!(left.is_empty(), "output dir should be empty: {left:?}");
+}
+
+/// Lines sharing a timestamp come out in node order, and each node's own
+/// lines keep their order whatever else lands between them.
+#[test]
+fn equal_timestamps_order_by_node_and_keep_file_order() {
+    let dir = test_dir("equal_timestamps_order_by_node_and_keep_file_order");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    // Every line shares one timestamp, so only the tie-break decides.
+    let ts = "2026-05-15T00:00:01.000000Z";
+    for node in ["charlie", "alice", "bob"] {
+        write_gz(
+            &inputs.join(format!("debug.log-20260515-{node}.gz")),
+            &format!("{ts} {node}-first\n{ts} {node}-second\n"),
+        );
+    }
+
+    let merged_dir = dir.join("merged");
+    run_ok(
+        bin().args(["merge", "-o"]).arg(&merged_dir).arg(&inputs),
+        "merge",
+    );
+    let merged = read_zst(&merged_dir.join("debug.log-20260515.zst"));
+    let nodes: Vec<&str> = merged
+        .lines()
+        .map(|l| l.split_once(' ').unwrap().0)
+        .collect();
+    // Ties break on reader index and readers are ordered by path, so the
+    // first node empties its run of same-instant lines before the next.
+    assert_eq!(
+        nodes,
+        vec!["alice", "alice", "bob", "bob", "charlie", "charlie"]
+    );
+    for node in ["alice", "bob", "charlie"] {
+        let own: Vec<&str> = merged
+            .lines()
+            .filter(|l| l.starts_with(&format!("{node} ")))
+            .map(|l| l.rsplit_once('-').unwrap().1)
+            .collect();
+        assert_eq!(own, vec!["first", "second"], "{node} lines reordered");
+    }
+}
+
+/// The merged *content* must not depend on the compression level; only the
+/// zstd framing may differ.
+#[test]
+fn compression_level_does_not_change_the_content() {
+    let dir = test_dir("compression_level_does_not_change_the_content");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+    for node in ["node1", "node2"] {
+        let mut content = String::new();
+        for i in 0..200 {
+            content.push_str(&format!(
+                "2026-05-15T00:00:{:02}.{i:06}Z {node}-{i}\n",
+                i % 60
+            ));
+        }
+        write_gz(
+            &inputs.join(format!("debug.log-20260515-{node}.gz")),
+            &content,
+        );
+    }
+
+    let at_level = |level: &str| -> String {
+        let out_dir = dir.join(format!("merged-{level}"));
+        run_ok(
+            bin()
+                .args(["merge", "-l", level, "-o"])
+                .arg(&out_dir)
+                .arg(&inputs),
+            "merge",
+        );
+        read_zst(&out_dir.join("debug.log-20260515.zst"))
+    };
+    let low = at_level("1");
+    assert_eq!(low.lines().count(), 400);
+    assert_eq!(at_level("19"), low);
+    assert_eq!(at_level("22"), low);
+}
+
+/// Node names are taken whole from the filename: dashes, dots, non-ASCII and
+/// one name being a prefix of another all have to survive the round-trip.
+#[test]
+fn awkward_node_names_round_trip() {
+    let dir = test_dir("awkward_node_names_round_trip");
+    let orig = dir.join("orig");
+    let split_out = dir.join("split-out");
+    std::fs::create_dir_all(&orig).unwrap();
+
+    let nodes = ["a", "ab", "node-with-dashes", "node.with.dots", "nøde"];
+    for (i, node) in nodes.iter().enumerate() {
+        write_gz(
+            &orig.join(format!("debug.log-20260515-{node}.gz")),
+            &format!("2026-05-15T00:00:{i:02} line-for-{node}\n"),
+        );
+    }
+
+    let merged_dir = dir.join("merged");
+    run_ok(
+        bin()
+            .args(["merge", "--check", "-o"])
+            .arg(&merged_dir)
+            .arg(&orig),
+        "merge",
+    );
+    run_ok(
+        bin()
+            .args(["split", "-o"])
+            .arg(&split_out)
+            .arg(merged_dir.join("debug.log-20260515.zst")),
+        "split",
+    );
+    for (i, node) in nodes.iter().enumerate() {
+        assert_eq!(
+            read_gz(&split_out.join(format!("debug.log-20260515-{node}.gz"))),
+            format!("2026-05-15T00:00:{i:02} line-for-{node}\n"),
+            "node {node} did not round-trip",
+        );
+    }
+}
+
+/// Lines a log can contain that aren't plain ASCII text: CRLF endings, a NUL
+/// byte, a very long line, and a leading line with no timestamp at all.
+#[test]
+fn awkward_line_shapes_round_trip() {
+    let dir = test_dir("awkward_line_shapes_round_trip");
+    let orig = dir.join("orig");
+    let split_out = dir.join("split-out");
+    std::fs::create_dir_all(&orig).unwrap();
+
+    let mut node1: Vec<u8> = b"no timestamp on this first line\r\n".to_vec();
+    node1.extend_from_slice(b"2026-05-15T00:00:02 crlf-line\r\n");
+    node1.extend_from_slice(b"2026-05-15T00:00:03 nul");
+    node1.push(0);
+    node1.extend_from_slice(b"byte\n");
+    node1.extend_from_slice(b"2026-05-15T00:00:04 ");
+    node1.extend_from_slice(&vec![b'x'; 300_000]);
+    node1.push(b'\n');
+    let node2 = b"2026-05-15T00:00:01 before-everything\n".to_vec();
+
+    let write_raw = |path: &Path, bytes: &[u8]| {
+        let f = std::fs::File::create(path).unwrap();
+        let mut enc = GzEncoder::new(f, Compression::default());
+        enc.write_all(bytes).unwrap();
+        enc.finish().unwrap();
+    };
+    write_raw(&orig.join("debug.log-20260515-node1.gz"), &node1);
+    write_raw(&orig.join("debug.log-20260515-node2.gz"), &node2);
+
+    let merged_dir = dir.join("merged");
+    let merged = merged_dir.join("debug.log-20260515.zst");
+    run_ok(
+        bin()
+            .args(["merge", "--check", "-o"])
+            .arg(&merged_dir)
+            .arg(&orig),
+        "merge",
+    );
+    run_ok(
+        bin().args(["split", "-o"]).arg(&split_out).arg(&merged),
+        "split",
+    );
+
+    let read_raw = |path: &Path| -> Vec<u8> {
+        let f = std::fs::File::open(path).unwrap();
+        let mut dec = MultiGzDecoder::new(f);
+        let mut v = Vec::new();
+        dec.read_to_end(&mut v).unwrap();
+        v
+    };
+    assert_eq!(
+        read_raw(&split_out.join("debug.log-20260515-node1.gz")),
+        node1
+    );
+    assert_eq!(
+        read_raw(&split_out.join("debug.log-20260515-node2.gz")),
+        node2
+    );
+
+    // A leading line with no timestamp inherits the zero key, so it sorts
+    // ahead of everything — including the other node's earlier line.
+    let f = std::fs::File::open(&merged).unwrap();
+    let mut first = Vec::new();
+    std::io::BufReader::new(zstd::Decoder::new(f).unwrap())
+        .read_until(b'\n', &mut first)
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&first),
+        "node1 no timestamp on this first line\r\n"
+    );
+}
+
+/// A rotated log is often several gzip members in one file. All of them have
+/// to be read, not just the first.
+#[test]
+fn a_multi_member_gzip_is_read_whole() {
+    let dir = test_dir("a_multi_member_gzip_is_read_whole");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    // Two gzip streams concatenated, as `cat a.gz b.gz` would give.
+    let mut concatenated = Vec::new();
+    for part in [
+        "2026-05-15T00:00:01 member-one\n",
+        "2026-05-15T00:00:03 member-two\n",
+    ] {
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(part.as_bytes()).unwrap();
+        concatenated.extend_from_slice(&enc.finish().unwrap());
+    }
+    std::fs::write(inputs.join("debug.log-20260515-rotated.gz"), &concatenated).unwrap();
+    write_gz(
+        &inputs.join("debug.log-20260515-other.gz"),
+        "2026-05-15T00:00:02 in-between\n",
+    );
+
+    let merged_dir = dir.join("merged");
+    let out = bin()
+        .args(["merge", "--check", "-o"])
+        .arg(&merged_dir)
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("rotated        OK    2 lines"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        read_zst(&merged_dir.join("debug.log-20260515.zst")),
+        "rotated 2026-05-15T00:00:01 member-one\n\
+         other 2026-05-15T00:00:02 in-between\n\
+         rotated 2026-05-15T00:00:03 member-two\n",
+    );
 }
