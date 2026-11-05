@@ -643,3 +643,47 @@ fn templates_filters_by_count_rank_and_category() {
     assert!(!only_net.contains("other"), "{only_net}");
     assert!(!only_net.contains("=== bench ==="), "{only_net}");
 }
+
+/// Only `debug.log-<date>-<node>.gz` names are picked up, and a node name
+/// holding a space is refused rather than merged into a file split can't undo.
+#[test]
+fn merge_input_discovery_rejects_unusable_names() {
+    let dir = test_dir("merge_input_discovery_rejects_unusable_names");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    let line = "2026-05-15T00:00:01 only-real-line\n";
+    write_gz(&inputs.join("debug.log-20260515-node1.gz"), line);
+    // None of these match the shape and all must be ignored.
+    for ignored in [
+        "debug.log-20260515-node2.txt",
+        "other.log-20260515-node3.gz",
+        "debug.log-20260515.gz",
+        "debug.log--node4.gz",
+        "debug.log-20260515-.gz",
+    ] {
+        write_gz(&inputs.join(ignored), "2026-05-15T00:00:02 ignored-line\n");
+    }
+
+    let merged_dir = dir.join("merged");
+    run_ok(
+        bin().args(["merge", "-o"]).arg(&merged_dir).arg(&inputs),
+        "merge",
+    );
+    assert_eq!(
+        read_zst(&merged_dir.join("debug.log-20260515.zst")),
+        format!("node1 {line}"),
+    );
+
+    // A space in the node name is an error, not a silently broken merge.
+    write_gz(&inputs.join("debug.log-20260515-node 5.gz"), line);
+    let out = bin()
+        .args(["merge", "-o"])
+        .arg(dir.join("merged2"))
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge");
+    assert!(!out.status.success(), "should have failed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("node 5"), "stderr: {stderr}");
+}

@@ -53,6 +53,14 @@ pub fn discover_inputs(dir: &Path) -> io::Result<Vec<MergeInput>> {
         if date.is_empty() || node.is_empty() {
             continue;
         }
+        // The merged stream separates node from line with a space, so a node
+        // name holding one could never be split back off.
+        if node.contains(' ') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("node name in `{fname}` contains a space"),
+            ));
+        }
         let node = node.to_string();
         let date = date.to_string();
         out.push(MergeInput { path, node, date });
