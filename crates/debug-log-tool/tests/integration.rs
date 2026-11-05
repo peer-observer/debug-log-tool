@@ -769,3 +769,108 @@ fn non_utf8_bytes_round_trip_and_still_cluster() {
     assert!(stdout.contains("=== net ==="), "{stdout}");
     assert!(stdout.contains("plain line <PEER>"), "{stdout}");
 }
+
+/// An empty input file contributes no lines but still has to be reported and
+/// counted as round-tripping.
+#[test]
+fn merge_handles_an_empty_input_file() {
+    let dir = test_dir("merge_handles_an_empty_input_file");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+    write_gz(&inputs.join("debug.log-20260515-empty.gz"), "");
+    write_gz(
+        &inputs.join("debug.log-20260515-full.gz"),
+        "2026-05-15T00:00:01 only-line\n",
+    );
+
+    let merged_dir = dir.join("merged");
+    let out = bin()
+        .args(["merge", "--check", "-o"])
+        .arg(&merged_dir)
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge --check");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("empty          OK    0 lines"), "{stdout}");
+    assert!(
+        stdout.contains("2/2 files round-trip identical"),
+        "{stdout}"
+    );
+    assert_eq!(
+        read_zst(&merged_dir.join("debug.log-20260515.zst")),
+        "full 2026-05-15T00:00:01 only-line\n",
+    );
+
+    // The empty node gets an empty file back, not no file at all.
+    let split_out = dir.join("split-out");
+    run_ok(
+        bin()
+            .args(["split", "-o"])
+            .arg(&split_out)
+            .arg(merged_dir.join("debug.log-20260515.zst")),
+        "split",
+    );
+    assert!(!split_out.join("debug.log-20260515-empty.gz").exists());
+}
+
+/// `merge` and `split` fail cleanly, with a message, on inputs they can't use.
+#[test]
+fn merge_and_split_reject_unusable_inputs() {
+    let dir = test_dir("merge_and_split_reject_unusable_inputs");
+    let empty_dir = dir.join("no-logs");
+    std::fs::create_dir_all(&empty_dir).unwrap();
+
+    let out = bin()
+        .args(["merge", "-o"])
+        .arg(dir.join("merged"))
+        .arg(&empty_dir)
+        .output()
+        .expect("spawn merge");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no debug.log-<date>-<node>.gz files"),
+        "{stderr}"
+    );
+
+    // A merged log with a line that has no `<node> ` prefix.
+    let bad = dir.join("debug.log-20260515.zst");
+    {
+        let f = std::fs::File::create(&bad).unwrap();
+        let mut enc = zstd::Encoder::new(f, 1).unwrap();
+        enc.write_all(b"node1 2026-05-15T00:00:01 fine\nno-prefix-here\n")
+            .unwrap();
+        enc.finish().unwrap();
+    }
+    let out = bin()
+        .args(["split", "-o"])
+        .arg(dir.join("split-out"))
+        .arg(&bad)
+        .output()
+        .expect("spawn split");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("line 2"), "should name the line: {stderr}");
+    assert!(stderr.contains("missing `<node> ` prefix"), "{stderr}");
+
+    // And an input whose name carries no date.
+    let misnamed = dir.join("merged-log.zst");
+    std::fs::copy(&bad, &misnamed).unwrap();
+    let out = bin()
+        .args(["split", "-o"])
+        .arg(dir.join("split-out2"))
+        .arg(&misnamed)
+        .output()
+        .expect("spawn split");
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("is not of the form"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
