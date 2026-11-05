@@ -177,9 +177,9 @@ pub fn run(input_dir: &Path, output_dir: Option<&Path>, level: i32, check: bool)
     }
     if check {
         let scope = if output_dir.is_some() {
-            "verifying merge → split round-trip (writing output too)"
+            "writing each day, then re-reading it and splitting it back"
         } else {
-            "verifying merge → split round-trip (no files written)"
+            "splitting the merged stream back (nothing written)"
         };
         println!("merge --check: {scope}");
     }
@@ -210,17 +210,17 @@ pub fn run(input_dir: &Path, output_dir: Option<&Path>, level: i32, check: bool)
     Ok(())
 }
 
-/// Streaming k-way merge of one day's inputs. Writes the interleaved,
-/// node-prefixed stream to `output` as zstd when `output` is `Some`, and/or —
-/// when `check` is set — verifies the round-trip by comparing, per node, a hash
-/// of the ingested content against a hash of what the real `split` parser
-/// reconstructs from the merged stream. Both can run in the same pass.
+/// Streaming k-way merge of one day's inputs, writing the interleaved,
+/// node-prefixed stream to `output` as zstd when `output` is `Some`.
 ///
 /// Returns `(node, line_count, ok)` per input file (sorted by node) when
 /// `check` is set, otherwise an empty vec.
 ///
-/// Writes to `<output>.tmp` and renames on success, so a run that fails
-/// part-way leaves neither a truncated merged log nor a damaged earlier one.
+/// Writes to a temp file and renames on success, so a run that fails part-way
+/// — or whose `--check` finds a mismatch — leaves neither a truncated merged
+/// log nor a damaged earlier one. With `--check` the temp file is decompressed
+/// and split again before the rename, so what gets published is the stream
+/// that was verified, not just the one that was meant to be written.
 fn merge_day(
     inputs: Vec<MergeInput>,
     output: Option<&Path>,
@@ -234,16 +234,130 @@ fn merge_day(
         name.push(format!(".{}.tmp", std::process::id()));
         PathBuf::from(name)
     });
-    let result = merge_into(inputs, tmp.as_deref(), level, check).and_then(|results| {
-        if let (Some(tmp), Some(output)) = (&tmp, output) {
-            std::fs::rename(tmp, output)?;
-        }
-        Ok(results)
-    });
+    let result = merge_and_verify(inputs, tmp.as_deref(), output, level, check);
     if let (Err(_), Some(tmp)) = (&result, &tmp) {
         let _ = std::fs::remove_file(tmp);
     }
     result
+}
+
+fn merge_and_verify(
+    inputs: Vec<MergeInput>,
+    tmp: Option<&Path>,
+    output: Option<&Path>,
+    level: i32,
+    check: bool,
+) -> io::Result<Vec<(String, u64, bool)>> {
+    let Some(checkable) = merge_into(inputs, tmp, level, check)? else {
+        if let (Some(tmp), Some(output)) = (tmp, output) {
+            std::fs::rename(tmp, output)?;
+        }
+        return Ok(Vec::new());
+    };
+
+    let written = match (tmp, checkable.stream) {
+        // Re-read what was actually written.
+        (Some(tmp), _) => read_back(tmp, &checkable.inputs)?,
+        // Nothing was written, so judge the stream as it was assembled.
+        (None, Some(stream)) => stream.finish(),
+        (None, None) => unreachable!("check without an output file digests the stream"),
+    };
+    let results = compare(&checkable.inputs, &written);
+
+    if let (Some(tmp), Some(output)) = (tmp, output) {
+        if results.iter().all(|(_, _, ok)| *ok) {
+            std::fs::rename(tmp, output)?;
+        } else {
+            println!(
+                "  check failed; merged log left unpublished at {}",
+                tmp.display()
+            );
+        }
+    }
+    Ok(results)
+}
+
+/// Decompress a merged log and digest it per node, the way `split` reads it.
+fn read_back(path: &Path, inputs: &[(String, u64)]) -> io::Result<HashMap<Vec<u8>, (u64, u64)>> {
+    let mut digests = Digests::default();
+    for (node, _) in inputs {
+        digests.seed(node);
+    }
+    let f = File::open(path).map_err(|e| at_path(path, e))?;
+    let mut reader = BufReader::new(zstd::Decoder::new(f).map_err(|e| at_path(path, e))?);
+    let mut line = Vec::new();
+    let mut line_no = 0u64;
+    loop {
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .map_err(|e| at_path(path, e))?
+            == 0
+        {
+            break;
+        }
+        line_no += 1;
+        digests.feed(&line, line_no)?;
+    }
+    Ok(digests.finish())
+}
+
+/// Per input file: did the merged log give its content back unchanged?
+fn compare(
+    inputs: &[(String, u64)],
+    written: &HashMap<Vec<u8>, (u64, u64)>,
+) -> Vec<(String, u64, bool)> {
+    let mut results: Vec<(String, u64, bool)> = inputs
+        .iter()
+        .map(|(node, input_hash)| {
+            let (hash, lines) = written
+                .get(node.as_bytes())
+                .copied()
+                .unwrap_or((DefaultHasher::new().finish(), 0));
+            (node.clone(), lines, hash == *input_hash)
+        })
+        .collect();
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+    results
+}
+
+/// Running per-node digest of a merged stream, fed one `<node> <line>` at a
+/// time through the real `split` parser.
+#[derive(Default)]
+struct Digests(HashMap<Vec<u8>, (DefaultHasher, u64)>);
+
+impl Digests {
+    /// Start a node at the digest of empty content, so an input that
+    /// contributes no lines compares as empty rather than as missing.
+    fn seed(&mut self, node: &str) {
+        self.0
+            .entry(node.as_bytes().to_vec())
+            .or_insert_with(|| (DefaultHasher::new(), 0));
+    }
+
+    fn feed(&mut self, line: &[u8], line_no: u64) -> io::Result<()> {
+        let (node, rest) = split::split_prefix(line, line_no)?;
+        let (hasher, count) = self.0.entry(node.to_vec()).or_default();
+        hasher.write(rest);
+        *count += 1;
+        Ok(())
+    }
+
+    /// `(hash, line_count)` per node.
+    fn finish(self) -> HashMap<Vec<u8>, (u64, u64)> {
+        self.0
+            .into_iter()
+            .map(|(node, (hasher, count))| (node, (hasher.finish(), count)))
+            .collect()
+    }
+}
+
+/// What one merge pass produced for `--check` to judge: the digest of each
+/// input's content, and — only when nothing was written and so nothing can be
+/// re-read — the digest of the stream as it was assembled.
+struct Checkable {
+    inputs: Vec<(String, u64)>,
+    stream: Option<Digests>,
 }
 
 fn merge_into(
@@ -251,23 +365,21 @@ fn merge_into(
     output: Option<&Path>,
     level: i32,
     check: bool,
-) -> io::Result<Vec<(String, u64, bool)>> {
+) -> io::Result<Option<Checkable>> {
     let mut readers: Vec<Reader> = inputs
         .into_iter()
         .map(|i| Reader::open(i, check))
         .collect::<io::Result<_>>()?;
 
-    // Per-node hash of the split-reconstructed content, plus a line count.
-    // Pre-seed every node so an empty input file (which emits nothing) still
-    // compares as the hash of empty content rather than a missing entry.
-    let mut roundtrip: HashMap<Vec<u8>, (DefaultHasher, u64)> = HashMap::new();
-    if check {
+    // With an output file the check re-reads it afterwards; with no file to
+    // re-read, digest the stream as we build it.
+    let mut stream = (check && output.is_none()).then(|| {
+        let mut d = Digests::default();
         for r in &readers {
-            roundtrip
-                .entry(r.node.clone().into_bytes())
-                .or_insert_with(|| (DefaultHasher::new(), 0));
+            d.seed(&r.node);
         }
-    }
+        d
+    });
 
     let mut heap: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::new();
     for (idx, r) in readers.iter_mut().enumerate() {
@@ -296,21 +408,16 @@ fn merge_into(
                 enc.write_all(b" ")?;
                 enc.write_all(&entry.line)?;
             }
-            if check {
-                // Reconstruct exactly the bytes `merge` emits for this line.
+            if stream.is_some() {
+                // Exactly the bytes `merge` would have written for this line.
                 merged.clear();
                 merged.extend_from_slice(node.as_bytes());
                 merged.push(b' ');
                 merged.extend_from_slice(&entry.line);
             }
         }
-        if check {
-            // Route it back through the real `split` parser — the same code
-            // path the `split` subcommand uses — and hash what it recovers.
-            let (node, rest) = split::split_prefix(&merged, line_no)?;
-            let (hasher, count) = roundtrip.entry(node.to_vec()).or_default();
-            hasher.write(rest);
-            *count += 1;
+        if let Some(stream) = stream.as_mut() {
+            stream.feed(&merged, line_no)?;
         }
         if let Some((key, line)) = readers[entry.reader_idx].next_line()? {
             heap.push(Reverse(HeapEntry {
@@ -326,21 +433,134 @@ fn merge_into(
     }
 
     if !check {
-        return Ok(Vec::new());
+        return Ok(None);
     }
-    let mut results = Vec::with_capacity(readers.len());
-    for r in &readers {
-        let input_hash = r
-            .input_hasher
-            .as_ref()
-            .expect("check mode enables input hashing")
-            .finish();
-        let (hasher, count) = roundtrip
-            .get(r.node.as_bytes())
-            .expect("node pre-seeded above");
-        let ok = hasher.finish() == input_hash;
-        results.push((r.node.clone(), *count, ok));
+    let inputs = readers
+        .iter()
+        .map(|r| {
+            let hash = r
+                .input_hasher
+                .as_ref()
+                .expect("check mode enables input hashing")
+                .finish();
+            (r.node.clone(), hash)
+        })
+        .collect();
+    Ok(Some(Checkable { inputs, stream }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("debug-log-tool-merge-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
-    results.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(results)
+
+    fn write_zst(path: &Path, content: &[u8]) {
+        let f = File::create(path).unwrap();
+        let mut enc = zstd::Encoder::new(f, 1).unwrap();
+        enc.write_all(content).unwrap();
+        enc.finish().unwrap();
+    }
+
+    fn hash_of(content: &[u8]) -> u64 {
+        let mut h = DefaultHasher::new();
+        h.write(content);
+        h.finish()
+    }
+
+    /// `read_back` has to recover, from the compressed log alone, exactly the
+    /// content each input contributed.
+    #[test]
+    fn read_back_recovers_each_node() {
+        let dir = test_dir("read-back");
+        let merged = dir.join("debug.log-20260515.zst");
+        write_zst(
+            &merged,
+            b"aa 2026-05-15T00:00:01 one\nbb 2026-05-15T00:00:02 two\naa 2026-05-15T00:00:03 three\n",
+        );
+
+        let inputs = vec![
+            (
+                "aa".to_string(),
+                hash_of(b"2026-05-15T00:00:01 one\n2026-05-15T00:00:03 three\n"),
+            ),
+            ("bb".to_string(), hash_of(b"2026-05-15T00:00:02 two\n")),
+        ];
+        let written = read_back(&merged, &inputs).unwrap();
+        assert_eq!(
+            compare(&inputs, &written),
+            vec![("aa".to_string(), 2, true), ("bb".to_string(), 1, true)],
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A log that doesn't give an input's bytes back has to come out as FAIL —
+    /// one byte dropped from one line is enough.
+    #[test]
+    fn compare_catches_a_log_that_lost_a_byte() {
+        let dir = test_dir("lost-byte");
+        let merged = dir.join("debug.log-20260515.zst");
+        write_zst(
+            &merged,
+            b"aa 2026-05-15T00:00:01 one\nbb 2026-05-15T00:00:02 tw\n",
+        );
+
+        let inputs = vec![
+            ("aa".to_string(), hash_of(b"2026-05-15T00:00:01 one\n")),
+            ("bb".to_string(), hash_of(b"2026-05-15T00:00:02 two\n")),
+        ];
+        let written = read_back(&merged, &inputs).unwrap();
+        assert_eq!(
+            compare(&inputs, &written),
+            vec![("aa".to_string(), 1, true), ("bb".to_string(), 1, false)],
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A missing node reads as empty content: right for an input that had no
+    /// lines, a failure for one that did.
+    #[test]
+    fn compare_treats_a_missing_node_as_empty() {
+        let dir = test_dir("missing-node");
+        let merged = dir.join("debug.log-20260515.zst");
+        write_zst(&merged, b"aa 2026-05-15T00:00:01 one\n");
+
+        let inputs = vec![
+            ("aa".to_string(), hash_of(b"2026-05-15T00:00:01 one\n")),
+            ("empty".to_string(), hash_of(b"")),
+            (
+                "dropped".to_string(),
+                hash_of(b"2026-05-15T00:00:02 gone\n"),
+            ),
+        ];
+        let written = read_back(&merged, &inputs).unwrap();
+        assert_eq!(
+            compare(&inputs, &written),
+            vec![
+                ("aa".to_string(), 1, true),
+                ("dropped".to_string(), 0, false),
+                ("empty".to_string(), 0, true),
+            ],
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A line in the merged log with no `<node> ` prefix is a hard error, not
+    /// a silently mis-attributed line.
+    #[test]
+    fn read_back_rejects_a_line_with_no_prefix() {
+        let dir = test_dir("no-prefix");
+        let merged = dir.join("debug.log-20260515.zst");
+        write_zst(&merged, b"aa 2026-05-15T00:00:01 one\nno-prefix\n");
+
+        let inputs = vec![("aa".to_string(), hash_of(b"2026-05-15T00:00:01 one\n"))];
+        let err = read_back(&merged, &inputs).unwrap_err();
+        assert!(err.to_string().contains("line 2"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
