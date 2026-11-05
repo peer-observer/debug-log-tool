@@ -602,15 +602,22 @@ fn is_ipv4(s: &str) -> bool {
 }
 
 fn is_ipv6(s: &str) -> bool {
-    let colons = s.bytes().filter(|&b| b == b':').count();
-    if colons < 2 {
+    if s.matches("::").count() > 1 || s.contains(":::") {
         return false;
     }
-    if s.matches("::").count() > 1 {
-        return false;
-    }
-    s.split(':')
+    let groups: Vec<&str> = s.split(':').collect();
+    if !groups
+        .iter()
         .all(|p| p.is_empty() || (p.len() <= 4 && p.bytes().all(is_ascii_hex)))
+    {
+        return false;
+    }
+    // Without a `::` to elide groups, all eight have to be spelled out —
+    // otherwise clock times like `12:34:56` read as addresses.
+    match s.contains("::") {
+        true => groups.iter().filter(|p| !p.is_empty()).count() <= 7,
+        false => groups.len() == 8,
+    }
 }
 
 fn is_onion_base(base: &str) -> bool {
@@ -824,5 +831,22 @@ mod tests {
     fn ipv6_port_brackets_kept_whole() {
         // The atom is preserved through pass 1 so the recognizer sees it.
         assert_eq!(kinds("[2001:db8::1]:8333"), vec![TokenKind::Ipv6Port]);
+    }
+
+    #[test]
+    fn ipv6_requires_eight_groups_or_an_elision() {
+        assert_eq!(kinds("2a01:4f8:1:2:3:4:5:6"), vec![TokenKind::Ipv6]);
+        assert_eq!(kinds("2a01:4f8:c010::1"), vec![TokenKind::Ipv6]);
+        assert_eq!(kinds("::1"), vec![TokenKind::Ipv6]);
+        assert_eq!(kinds("[::]:0"), vec![TokenKind::Ipv6Port]);
+
+        // A clock time is three groups with no elision, not an address.
+        assert!(kinds("12:34:56").is_empty());
+        assert!(kinds("1:2:3:4:5:6:7").is_empty(), "seven groups");
+        assert!(kinds("1:2:3:4:5:6:7:8:9").is_empty(), "nine groups");
+        assert!(kinds("1::2::3").is_empty(), "two elisions");
+        assert!(kinds("1:::2").is_empty(), "three colons");
+        assert!(kinds("12345::1").is_empty(), "group too long");
+        assert!(kinds("zzzz::1").is_empty(), "not hex");
     }
 }
