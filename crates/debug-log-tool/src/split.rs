@@ -5,7 +5,8 @@
 //! the file. Since `merge` groups a single day into each `debug.log-<date>.zst`
 //! and prefixes every line — including timestamp-less continuation lines — with
 //! its `<node> `, splitting purely on the node prefix reconstructs each
-//! original `debug.log-<date>-<node>.gz` byte-for-byte.
+//! original `debug.log-<date>-<node>.gz` byte-for-byte, except that `merge`
+//! adds a newline to a last line that lacks one.
 
 use std::collections::HashMap;
 use std::fs::File;

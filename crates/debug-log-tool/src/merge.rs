@@ -91,6 +91,10 @@ impl Reader {
         if self.inner.read_line(&mut buf)? == 0 {
             return Ok(None);
         }
+        // Without a newline here, the next line written continues this one.
+        if !buf.ends_with('\n') {
+            buf.push('\n');
+        }
         if let Some(h) = self.input_hasher.as_mut() {
             h.write(buf.as_bytes());
         }

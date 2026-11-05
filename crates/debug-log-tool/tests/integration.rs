@@ -467,3 +467,54 @@ fn templates_extracts_clusters_and_round_trips_state() {
     assert!(json3.contains(r#""count":200"#));
     assert!(json3.contains(r#""count":100"#));
 }
+
+/// A last line without a newline must not run into the next node's line.
+#[test]
+fn merge_terminates_unterminated_final_line() {
+    let dir = test_dir("merge_terminates_unterminated_final_line");
+    let orig = dir.join("orig");
+    let split_out = dir.join("split-out");
+    std::fs::create_dir_all(&orig).unwrap();
+
+    // node1's last line has no trailing newline.
+    write_gz(
+        &orig.join("debug.log-20260515-node1.gz"),
+        "2026-05-15T00:06:30 first-on-node1\n\
+         2026-05-15T00:06:32 third-on-node1",
+    );
+    let node2 = "2026-05-15T00:06:31 second-on-node2\n\
+                 2026-05-15T00:06:33 fourth-on-node2\n";
+    write_gz(&orig.join("debug.log-20260515-node2.gz"), node2);
+
+    let merged_dir = dir.join("merged");
+    let merged = merged_dir.join("debug.log-20260515.zst");
+    run_ok(
+        bin()
+            .args(["merge", "--check", "-o"])
+            .arg(&merged_dir)
+            .arg(&orig),
+        "merge",
+    );
+    assert_eq!(
+        read_zst(&merged),
+        "node1 2026-05-15T00:06:30 first-on-node1\n\
+         node2 2026-05-15T00:06:31 second-on-node2\n\
+         node1 2026-05-15T00:06:32 third-on-node1\n\
+         node2 2026-05-15T00:06:33 fourth-on-node2\n",
+    );
+
+    run_ok(
+        bin().args(["split", "-o"]).arg(&split_out).arg(&merged),
+        "split",
+    );
+    // node2 keeps both lines; node1 gets back the newline merge added.
+    assert_eq!(
+        read_gz(&split_out.join("debug.log-20260515-node2.gz")),
+        node2
+    );
+    assert_eq!(
+        read_gz(&split_out.join("debug.log-20260515-node1.gz")),
+        "2026-05-15T00:06:30 first-on-node1\n\
+         2026-05-15T00:06:32 third-on-node1\n",
+    );
+}
