@@ -874,3 +874,48 @@ fn merge_and_split_reject_unusable_inputs() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// Whether lines carry merge's `<node> ` prefix is a property of the content,
+/// not of the compression: a per-node log that happens to be zstd must not
+/// have its timestamp mistaken for a node name.
+#[test]
+fn templates_does_not_strip_a_prefix_that_is_not_there() {
+    let dir = test_dir("templates_does_not_strip_a_prefix_that_is_not_there");
+    // Leads with an indented continuation line that embeds a timestamp, the
+    // shape most likely to be mistaken for a node prefix.
+    let log = " 2026-05-15T00:00:00 indented continuation\n\
+               2026-05-15T00:00:01 [net] received: ping (8 bytes) peer=1\n\
+               \tcontinuation line of its own\n\
+               2026-05-15T00:00:02 [net] received: ping (9 bytes) peer=2\n";
+
+    // The same per-node log plain, gzipped and zstd-compressed.
+    let plain = dir.join("debug.log");
+    std::fs::write(&plain, log).unwrap();
+    let gz = dir.join("debug.log.gz");
+    write_gz(&gz, log);
+    let zst = dir.join("debug.log.zst");
+    {
+        let f = std::fs::File::create(&zst).unwrap();
+        let mut enc = zstd::Encoder::new(f, 1).unwrap();
+        enc.write_all(log.as_bytes()).unwrap();
+        enc.finish().unwrap();
+    }
+
+    let report = |path: &Path| -> String {
+        let out = bin().arg("templates").arg(path).output().expect("spawn");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let expected = report(&plain);
+    assert!(expected.contains("=== net ==="), "{expected}");
+    assert!(
+        expected.contains("received : ping ( <BYTES> ) <PEER>"),
+        "{expected}"
+    );
+    assert_eq!(report(&gz), expected, "gzip read differently");
+    assert_eq!(report(&zst), expected, "zstd read differently");
+}
