@@ -11,6 +11,9 @@ use crate::drain::{Cluster, Drain, Slot};
 use crate::line;
 use crate::tokenizer::{TokenKind, tokenize};
 
+/// JSONL state format version written by [`Analyzer::save`].
+const STATE_VERSION: u64 = 1;
+
 /// Top-level entry point. Maintains one [`Drain`] per category and
 /// dispatches each ingested line accordingly.
 #[derive(Debug, Clone)]
@@ -65,7 +68,8 @@ impl Analyzer {
     pub fn save<W: Write>(&self, mut w: W) -> io::Result<()> {
         writeln!(
             w,
-            r#"{{"_meta":{{"version":1,"depth":{},"threshold":{}}}}}"#,
+            r#"{{"_meta":{{"version":{},"depth":{},"threshold":{}}}}}"#,
+            STATE_VERSION,
             self.depth,
             json_float(self.threshold),
         )?;
@@ -195,7 +199,12 @@ fn parse_meta(line: &str) -> io::Result<(usize, f64)> {
     p.expect_key("_meta")?;
     p.expect(b'{')?;
     p.expect_key("version")?;
-    let _version = p.parse_uint()?;
+    let version = p.parse_uint()?;
+    if version > STATE_VERSION {
+        return Err(invalid(format!(
+            "state file version {version} is newer than {STATE_VERSION}"
+        )));
+    }
     p.expect(b',')?;
     p.expect_key("depth")?;
     let depth = p.parse_uint()?;
@@ -575,5 +584,94 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort();
         assert_eq!(keys, sorted, "save output must be sorted by (category, id)");
+    }
+
+    const HEADER: &str = r#"{"_meta":{"version":1,"depth":4,"threshold":0.5}}"#;
+
+    fn load_str(s: &str) -> io::Result<Analyzer> {
+        Analyzer::load(io::Cursor::new(s.to_string()))
+    }
+
+    #[test]
+    fn a_newer_state_version_is_refused() {
+        let newer = r#"{"_meta":{"version":2,"depth":4,"threshold":0.5}}"#;
+        let err = load_str(newer).unwrap_err();
+        assert!(err.to_string().contains("version 2"), "{err}");
+        assert!(load_str(HEADER).is_ok());
+    }
+
+    #[test]
+    fn meta_round_trips_depth_and_threshold() {
+        for (depth, threshold) in [(2usize, 0.0f64), (4, 0.5), (9, 1.0), (5, 0.125)] {
+            let a = Analyzer::new(depth, threshold);
+            let mut buf = Vec::new();
+            a.save(&mut buf).unwrap();
+            let b = Analyzer::load(io::Cursor::new(buf)).unwrap();
+            assert_eq!(b.depth(), depth);
+            assert_eq!(b.threshold(), threshold);
+        }
+    }
+
+    #[test]
+    fn malformed_state_is_an_error_not_a_panic() {
+        for bad in [
+            "",
+            "not json",
+            r#"{"_meta":{"version":1,"depth":4}}"#,
+            r#"{"meta":{"version":1,"depth":4,"threshold":0.5}}"#,
+            r#"{"_meta":{"version":1,"depth":-4,"threshold":0.5}}"#,
+            r#"{"_meta":{"version":1,"depth":4,"threshold":x}}"#,
+        ] {
+            assert!(load_str(bad).is_err(), "accepted {bad:?}");
+        }
+        let fields = r#""id":1,"category":null,"count":1,"first_seen":null,"last_seen":null"#;
+        for tail in [
+            "",
+            r#","template":[{"t":"Q"}]"#,
+            r#","template":[{"t":"W","k":"NOPE"}]"#,
+            r#","template":[{"t":"L","v":"unterminated"#,
+            r#","template":[{"t":"L","v":"a"}"#,
+            r#","template":[{"t":"L","v":"a"},]"#,
+        ] {
+            let s = format!("{HEADER}\n{{{fields}{tail}}}\n");
+            assert!(load_str(&s).is_err(), "accepted {s}");
+        }
+    }
+
+    #[test]
+    fn blank_lines_in_state_are_skipped() {
+        let cluster = r#"{"id":1,"category":"net","count":1,"first_seen":null,"last_seen":null,"template":[{"t":"S"}]}"#;
+        let a = load_str(&format!("{HEADER}\n\n{cluster}\n\n")).unwrap();
+        assert_eq!(a.templates().count(), 1);
+    }
+
+    #[test]
+    fn every_slot_and_escape_survives_a_round_trip() {
+        let mut a = Analyzer::new(4, 0.5);
+        // One template with a literal, a typed and a starred slot, where the
+        // literal needs escaping and carries a non-ASCII char.
+        let bell = '\u{7}';
+        a.ingest_line(&format!(
+            "2026-06-06T12:00:00Z [net] \"quote\\back\"{bell}\u{b5} one ding peer=1"
+        ));
+        a.ingest_line(&format!(
+            "2026-06-06T12:00:01Z [net] \"quote\\back\"{bell}\u{b5} one dong peer=2"
+        ));
+        assert_eq!(a.templates().count(), 1);
+
+        let mut buf = Vec::new();
+        a.save(&mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains(r#"{"t":"S"}"#), "expected a star: {text}");
+        assert!(text.contains(r#"{"t":"W","k":"PEER"}"#), "{text}");
+        assert!(text.contains("\\u0007"), "control char escaped: {text}");
+
+        let b = Analyzer::load(io::Cursor::new(text)).unwrap();
+        let (_, before) = a.templates().next().unwrap();
+        let (_, after) = b.templates().next().unwrap();
+        assert_eq!(before.template, after.template);
+        assert_eq!(before.count, after.count);
+        assert_eq!(before.first_seen, after.first_seen);
+        assert_eq!(before.last_seen, after.last_seen);
     }
 }
