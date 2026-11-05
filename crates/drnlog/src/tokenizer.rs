@@ -895,4 +895,85 @@ mod tests {
         // One char short of a hash, so the duration reading stands.
         assert_eq!(kinds(&hash[1..]), vec![TokenKind::Duration]);
     }
+
+    #[test]
+    fn ports_must_be_in_range() {
+        assert_eq!(kinds("192.0.2.1:65535"), vec![TokenKind::Ipv4Port]);
+        assert!(kinds("192.0.2.1:65536").is_empty());
+        assert!(kinds("abcdefghijklmnop.onion:65536").is_empty());
+        assert_eq!(
+            kinds("5pcdrykqq4dewrtm4ngeduhivsqqmzs5rvt5icxnjmazn4c3yxta.b32.i2p:65536"),
+            vec![],
+        );
+    }
+
+    #[test]
+    fn ipv4_octets_must_be_three_digits_and_in_range() {
+        assert_eq!(kinds("255.255.255.255"), vec![TokenKind::Ipv4]);
+        assert!(kinds("192.0.2.256").is_empty(), "octet out of range");
+        assert!(kinds("192.0.2.0001").is_empty(), "octet too long");
+        assert!(kinds("192.0..1").is_empty(), "empty octet");
+        assert!(kinds("192.0.2.1.5").is_empty(), "five octets");
+    }
+
+    #[test]
+    fn onion_and_i2p_bases_must_be_the_right_length_and_alphabet() {
+        assert!(kinds("abcdefghijklmno.onion").is_empty(), "15 chars");
+        assert!(kinds("ABCDEFGHIJKLMNOP.onion").is_empty(), "uppercase");
+        assert!(
+            kinds("abcdefghijklmn1p.onion").is_empty(),
+            "1 not in base32"
+        );
+        let i2p_52 = "5pcdrykqq4dewrtm4ngeduhivsqqmzs5rvt5icxnjmazn4c3yxta";
+        assert_eq!(kinds(&format!("{i2p_52}.b32.i2p")), vec![TokenKind::I2P]);
+        assert!(
+            kinds(&format!("{}.b32.i2p", &i2p_52[1..])).is_empty(),
+            "51 chars"
+        );
+    }
+
+    #[test]
+    fn bech32_needs_six_data_chars_in_the_alphabet() {
+        assert_eq!(kinds("bc1qqqqqq"), vec![TokenKind::Bech32]);
+        assert!(kinds("bc1qqqqq").is_empty(), "five data chars");
+        assert!(kinds("bc1qqqqqb").is_empty(), "b not in the alphabet");
+        assert_eq!(kinds("bcrt1qqqqqq"), vec![TokenKind::Bech32]);
+    }
+
+    #[test]
+    fn float_shapes_accepted_and_rejected() {
+        for ok in ["1.0", "-1.5", "+0.25", "1.5e3", "1.5E-3", "1.5e+3"] {
+            assert_eq!(kinds(ok), vec![TokenKind::Float], "{ok}");
+        }
+        for not_float in ["1.", "1.5e", "1.5e+", "1..5", "1.5.5", "1.5x"] {
+            assert!(
+                !kinds(not_float).contains(&TokenKind::Float),
+                "{not_float} read as a float"
+            );
+        }
+        // No fractional part, so these are integers rather than floats.
+        assert_eq!(kinds("15"), vec![TokenKind::Int]);
+        assert_eq!(kinds("-15"), vec![TokenKind::Int]);
+    }
+
+    #[test]
+    fn duration_units_and_signs() {
+        for ok in [
+            "5ns", "5us", "5μs", "5ms", "5s", "5m", "5h", "5d", "-5s", "+5s",
+        ] {
+            assert_eq!(kinds(ok), vec![TokenKind::Duration], "{ok}");
+        }
+        assert!(kinds("5y").is_empty(), "no year unit");
+        assert!(kinds("s").is_empty(), "no number");
+    }
+
+    #[test]
+    fn a_lone_separator_stays_one_token() {
+        fn texts(s: &str) -> Vec<&str> {
+            tokenize(s).iter().map(|t| t.text()).collect()
+        }
+        assert_eq!(texts(","), vec![","]);
+        assert_eq!(texts(":"), vec![":"]);
+        assert_eq!(texts("peer=9:"), vec!["peer=9", ":"]);
+    }
 }
