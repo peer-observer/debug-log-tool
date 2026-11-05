@@ -674,4 +674,32 @@ mod tests {
         assert_eq!(before.first_seen, after.first_seen);
         assert_eq!(before.last_seen, after.last_seen);
     }
+
+    #[test]
+    fn every_json_string_escape_decodes() {
+        let escaped = r#"q\"b\\s\/n\nr\rt\tb\bf\fAAeé"#;
+        let cluster = format!(
+            r#"{{"id":1,"category":"net","count":1,"first_seen":null,"last_seen":null,"template":[{{"t":"L","v":"{escaped}"}}]}}"#
+        );
+        let a = load_str(&format!("{HEADER}\n{cluster}\n")).unwrap();
+        let (_, c) = a.templates().next().unwrap();
+        let expected = "q\"b\\s/n\nr\rt\tb\u{8}f\u{c}AAe\u{e9}";
+        match &c.template[0] {
+            Slot::Text(s) => assert_eq!(s, expected),
+            other => panic!("expected a literal slot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn broken_escapes_are_rejected() {
+        for broken in [r#"a\"#, r#"a\x"#, r#"a\u00"#, r#"a\uZZZZ"#, r#"a\ud800"#] {
+            let cluster = format!(
+                r#"{{"id":1,"category":"net","count":1,"first_seen":null,"last_seen":null,"template":[{{"t":"L","v":"{broken}"}}]}}"#
+            );
+            assert!(
+                load_str(&format!("{HEADER}\n{cluster}\n")).is_err(),
+                "accepted {broken}"
+            );
+        }
+    }
 }
