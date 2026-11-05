@@ -640,6 +640,9 @@ fn templates_filters_by_count_rank_and_category() {
 
     let all = report(&[]);
     assert!(all.contains("common") && all.contains("rare") && all.contains("other"));
+    // Categories in order, one blank line between the blocks and none before.
+    assert!(all.starts_with("=== bench ==="), "{all}");
+    assert!(all.contains("\n\n=== net ==="), "{all}");
 
     let min = report(&["--min-count", "3"]);
     assert!(min.contains("common"), "{min}");
@@ -918,4 +921,35 @@ fn templates_does_not_strip_a_prefix_that_is_not_there() {
     );
     assert_eq!(report(&gz), expected, "gzip read differently");
     assert_eq!(report(&zst), expected, "zstd read differently");
+}
+
+/// `--json` output has to escape whatever control bytes a log line carried.
+#[test]
+fn templates_json_escapes_control_characters() {
+    let dir = test_dir("templates_json_escapes_control_characters");
+    let fixture = dir.join("debug.log");
+    let mut bytes: Vec<u8> = b"2026-05-15T00:00:01 [net] odd".to_vec();
+    bytes.push(0x01);
+    bytes.extend_from_slice(b"byte here\n");
+    std::fs::write(&fixture, &bytes).unwrap();
+
+    let out = bin()
+        .args(["templates", "--json"])
+        .arg(&fixture)
+        .output()
+        .expect("spawn templates");
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("\\u0001"),
+        "unescaped control byte: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains('\u{1}'),
+        "raw control byte in JSON: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("\\u0020"),
+        "spaces stay literal: {stdout:?}"
+    );
 }
