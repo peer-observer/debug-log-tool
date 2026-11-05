@@ -293,4 +293,89 @@ mod tests {
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].count, 3);
     }
+
+    fn sorted_clusters(d: &Drain) -> Vec<&Cluster> {
+        let mut v: Vec<&Cluster> = d.clusters().collect();
+        v.sort_by_key(|c| c.id);
+        v
+    }
+
+    #[test]
+    fn similarity_below_threshold_splits_the_cluster() {
+        // Depth 2 routes on token count alone, so both lines reach the same
+        // leaf; they agree on 1 of 4 positions, which is under the threshold.
+        let mut d = Drain::new(2, 0.5);
+        d.add_tokens(&line("alpha one two three"), None);
+        d.add_tokens(&line("alpha four five six"), None);
+        assert_eq!(d.clusters().count(), 2);
+
+        // Three of four positions agree, which is over it.
+        let mut d = Drain::new(2, 0.5);
+        d.add_tokens(&line("alpha one two three"), None);
+        d.add_tokens(&line("alpha one two four"), None);
+        assert_eq!(d.clusters().count(), 1);
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_earlier_cluster() {
+        let mut d = Drain::new(2, 0.5);
+        d.add_tokens(&line("a b"), None);
+        d.add_tokens(&line("c d"), None);
+        // Matches "a b" at position 0 and "c d" at position 1, equally well.
+        d.add_tokens(&line("a d"), None);
+
+        let clusters = sorted_clusters(&d);
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0].count, 2, "first cluster should absorb the tie");
+        assert_eq!(
+            clusters[0].template,
+            vec![Slot::Text("a".into()), Slot::Star]
+        );
+        assert_eq!(clusters[1].count, 1);
+    }
+
+    #[test]
+    fn a_star_slot_keeps_matching_new_values() {
+        let mut d = Drain::new(4, 0.5);
+        for name in ["foo", "bar", "baz", "qux"] {
+            d.add_tokens(&line(&format!("The event named {name} is done")), None);
+        }
+        let clusters: Vec<&Cluster> = d.clusters().collect();
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].count, 4);
+    }
+
+    #[test]
+    fn inserted_ids_do_not_collide_with_new_ones() {
+        let mut d = Drain::new(4, 0.5);
+        d.insert_cluster(Cluster {
+            id: 7,
+            template: vec![Slot::Text("loaded".into())],
+            count: 3,
+            first_seen: None,
+            last_seen: None,
+        });
+        d.add_tokens(&line("fresh line here"), None);
+        d.add_tokens(&line("another fresh line"), None);
+
+        let ids: Vec<u64> = sorted_clusters(&d).iter().map(|c| c.id).collect();
+        assert_eq!(ids, vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn an_empty_line_clusters_on_its_own() {
+        let mut d = Drain::new(4, 0.5);
+        d.add_tokens(&line(""), None);
+        d.add_tokens(&line(""), None);
+        let clusters: Vec<&Cluster> = d.clusters().collect();
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].count, 2);
+        assert!(clusters[0].template.is_empty());
+    }
+
+    #[test]
+    fn depth_is_clamped_to_two() {
+        assert_eq!(Drain::new(0, 0.5).depth(), 2);
+        assert_eq!(Drain::new(7, 0.5).depth(), 7);
+    }
 }
