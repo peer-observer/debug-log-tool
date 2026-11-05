@@ -220,7 +220,7 @@ fn merge_check_with_output_writes_and_verifies() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("writing output too"),
+        stdout.contains("re-reading it and splitting it back"),
         "scope note: {stdout}"
     );
     assert!(
@@ -1526,4 +1526,67 @@ fn concurrent_merges_do_not_share_a_temp_file() {
         leftovers.is_empty(),
         "temp files left behind: {leftovers:?}"
     );
+}
+
+/// With `--check -o` the log is verified by re-reading it before it is
+/// published, so a passing run leaves a readable log and no temp file, and
+/// the check-only run of the same inputs agrees.
+#[test]
+fn check_verifies_the_written_log_before_publishing_it() {
+    let dir = test_dir("check_verifies_the_written_log_before_publishing_it");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    let node1 = "2026-05-15T00:00:01 one\n2026-05-15T00:00:03 three\n";
+    let node2 = "2026-05-15T00:00:02 two\n";
+    write_gz(&inputs.join("debug.log-20260515-node1.gz"), node1);
+    write_gz(&inputs.join("debug.log-20260515-node2.gz"), node2);
+
+    let merged_dir = dir.join("merged");
+    let out = bin()
+        .args(["merge", "--check", "-o"])
+        .arg(&merged_dir)
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge --check -o");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("2/2 files round-trip identical"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("unpublished"), "{stdout}");
+
+    // Exactly one file: the published log, no temp left over.
+    let mut left: Vec<String> = std::fs::read_dir(&merged_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(left, vec!["debug.log-20260515.zst"]);
+    assert_eq!(
+        read_zst(&merged_dir.join("debug.log-20260515.zst")),
+        "node1 2026-05-15T00:00:01 one\n\
+         node2 2026-05-15T00:00:02 two\n\
+         node1 2026-05-15T00:00:03 three\n",
+    );
+
+    // Check-only has nothing to re-read, says so, and writes nothing.
+    let out = bin()
+        .args(["merge", "--check"])
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge --check");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("nothing written"), "{stdout}");
+    assert!(
+        stdout.contains("2/2 files round-trip identical"),
+        "{stdout}"
+    );
+    assert_eq!(left, vec!["debug.log-20260515.zst"]);
 }
