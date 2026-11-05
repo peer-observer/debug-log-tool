@@ -22,6 +22,11 @@ use flate2::read::MultiGzDecoder;
 use crate::split;
 use crate::timestamp::{TimestampKey, parse_timestamp};
 
+/// Name the file an IO error came from: a merge reads many at once.
+fn at_path(path: &Path, e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("{}: {e}", path.display()))
+}
+
 const FILE_PREFIX: &str = "debug.log-";
 const FILE_SUFFIX: &str = ".gz";
 
@@ -72,6 +77,7 @@ pub fn discover_inputs(dir: &Path) -> io::Result<Vec<MergeInput>> {
 
 struct Reader {
     node: String,
+    path: PathBuf,
     inner: BufReader<MultiGzDecoder<File>>,
     // Timestamp of the most recent line we successfully parsed. Lines without
     // their own timestamp (continuation lines, multi-line errors) inherit it
@@ -86,9 +92,10 @@ struct Reader {
 
 impl Reader {
     fn open(input: MergeInput, check: bool) -> io::Result<Self> {
-        let f = File::open(&input.path)?;
+        let f = File::open(&input.path).map_err(|e| at_path(&input.path, e))?;
         Ok(Self {
             node: input.node,
+            path: input.path,
             inner: BufReader::new(MultiGzDecoder::new(f)),
             last_key: TimestampKey::default(),
             input_hasher: check.then(DefaultHasher::new),
@@ -99,7 +106,11 @@ impl Reader {
         // Bytes, not text: a debug.log can hold anything a peer sent, and a
         // truncated gzip can cut a character in half.
         let mut buf = Vec::new();
-        if self.inner.read_until(b'\n', &mut buf)? == 0 {
+        let read = self
+            .inner
+            .read_until(b'\n', &mut buf)
+            .map_err(|e| at_path(&self.path, e))?;
+        if read == 0 {
             return Ok(None);
         }
         // Without a newline here, the next line written continues this one.
