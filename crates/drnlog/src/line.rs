@@ -167,4 +167,45 @@ mod tests {
         assert_eq!(l.category, None);
         assert_eq!(l.content, "connect: [2001:db8::1]:8333");
     }
+
+    #[test]
+    fn four_digits_without_a_dash_is_not_a_timestamp() {
+        let l = parse("2026:06:06T12:34:56Z [net] hi");
+        assert_eq!(l.timestamp, None);
+        assert_eq!(l.category, None);
+        assert_eq!(l.content, "2026:06:06T12:34:56Z [net] hi");
+
+        let l = parse("abcd-06-06T12:34:56Z [net] hi");
+        assert_eq!(l.timestamp, None);
+    }
+
+    #[test]
+    fn a_bracket_group_with_whitespace_is_not_a_category() {
+        let l = parse("2026-06-06T12:34:56Z [not a tag] rest");
+        assert_eq!(l.thread, None);
+        assert_eq!(l.category, None);
+        assert_eq!(l.content, "[not a tag] rest");
+    }
+
+    #[test]
+    fn an_unclosed_bracket_is_not_a_category() {
+        let l = parse("2026-06-06T12:34:56Z [net oops");
+        assert_eq!(l.category, None);
+        assert_eq!(l.content, "[net oops");
+    }
+
+    #[test]
+    fn timestamp_only_line_has_empty_content() {
+        let l = parse("2026-06-06T12:34:56Z");
+        assert_eq!(l.timestamp, Some("2026-06-06T12:34:56Z"));
+        assert_eq!(l.content, "");
+    }
+
+    #[test]
+    fn a_third_bracket_group_stays_in_content() {
+        let l = parse("2026-06-06T12:34:56Z [msghand] [net] [extra] tail");
+        assert_eq!(l.thread, Some("msghand"));
+        assert_eq!(l.category, Some("net"));
+        assert_eq!(l.content, "[extra] tail");
+    }
 }
