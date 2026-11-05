@@ -1590,3 +1590,170 @@ fn check_verifies_the_written_log_before_publishing_it() {
     );
     assert_eq!(left, vec!["debug.log-20260515.zst"]);
 }
+
+/// Killing a merge mid-run must leave the output directory without a usable
+/// log — and a re-run afterwards has to produce the right one.
+#[test]
+fn a_killed_merge_publishes_nothing_and_a_rerun_recovers() {
+    let dir = test_dir("a_killed_merge_publishes_nothing_and_a_rerun_recovers");
+    let inputs = dir.join("inputs");
+    let merged_dir = dir.join("merged");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    // Big enough that the merge is still running when we kill it.
+    let mut content = String::new();
+    for i in 0..120_000 {
+        content.push_str(&format!(
+            "2026-05-15T00:00:{:02}.{i:06}Z line-{i}\n",
+            i % 60
+        ));
+    }
+    write_gz(&inputs.join("debug.log-20260515-node1.gz"), &content);
+
+    let mut child = bin()
+        .args(["merge", "-l", "19", "-o"])
+        .arg(&merged_dir)
+        .arg(&inputs)
+        .spawn()
+        .expect("spawn merge");
+    // Wait for the temp file to appear, then kill the run.
+    let mut killed = false;
+    for _ in 0..600 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let has_tmp = std::fs::read_dir(&merged_dir).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|e| {
+                e.file_name().to_string_lossy().ends_with(".tmp")
+                    && e.metadata().is_ok_and(|m| m.len() > 0)
+            })
+        });
+        if has_tmp {
+            child.kill().unwrap();
+            killed = true;
+            break;
+        }
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+    }
+    child.wait().unwrap();
+    assert!(killed, "merge finished before it could be killed");
+
+    // No published log — only the abandoned temp file.
+    assert!(!merged_dir.join("debug.log-20260515.zst").exists());
+
+    // A re-run still produces the right log, and clears up after itself.
+    run_ok(
+        bin()
+            .args(["merge", "--check", "-o"])
+            .arg(&merged_dir)
+            .arg(&inputs),
+        "merge",
+    );
+    let merged = read_zst(&merged_dir.join("debug.log-20260515.zst"));
+    assert_eq!(merged.lines().count(), 120_000);
+}
+
+/// merge orders inputs it assumes are already chronological. When one isn't —
+/// a clock step, or rotated members concatenated out of order — the merged log
+/// can't be sorted, but no line may be lost or altered.
+#[test]
+fn unsorted_input_still_round_trips() {
+    let dir = test_dir("unsorted_input_still_round_trips");
+    let orig = dir.join("orig");
+    let split_out = dir.join("split-out");
+    std::fs::create_dir_all(&orig).unwrap();
+
+    // node1 steps backwards in the middle; node2 is in order.
+    let node1 = "2026-05-15T00:00:05 five\n\
+                 2026-05-15T00:00:02 two-after-five\n\
+                 2026-05-15T00:00:09 nine\n\
+                 2026-05-15T00:00:01 one-at-the-end\n";
+    let node2 = "2026-05-15T00:00:03 three\n2026-05-15T00:00:07 seven\n";
+    write_gz(&orig.join("debug.log-20260515-node1.gz"), node1);
+    write_gz(&orig.join("debug.log-20260515-node2.gz"), node2);
+
+    let merged_dir = dir.join("merged");
+    let merged = merged_dir.join("debug.log-20260515.zst");
+    run_ok(
+        bin()
+            .args(["merge", "--check", "-o"])
+            .arg(&merged_dir)
+            .arg(&orig),
+        "merge",
+    );
+    run_ok(
+        bin().args(["split", "-o"]).arg(&split_out).arg(&merged),
+        "split",
+    );
+    assert_eq!(
+        read_gz(&split_out.join("debug.log-20260515-node1.gz")),
+        node1
+    );
+    assert_eq!(
+        read_gz(&split_out.join("debug.log-20260515-node2.gz")),
+        node2
+    );
+    // Every line is there exactly once.
+    assert_eq!(read_zst(&merged).lines().count(), 6);
+}
+
+/// Timestamps that parse but are nonsense as dates still have to order and
+/// round-trip, rather than panicking or dropping lines.
+#[test]
+fn extreme_timestamps_round_trip() {
+    let dir = test_dir("extreme_timestamps_round_trip");
+    let orig = dir.join("orig");
+    let split_out = dir.join("split-out");
+    std::fs::create_dir_all(&orig).unwrap();
+
+    // In order by the key merge builds, so the merged order is checkable.
+    let node1 = "0000-00-00T00:00:00 zero-everything\n\
+                 2026-02-29T12:00:00 not-a-leap-year\n\
+                 2026-05-15T00:00:01.999999999 nine-nano-digits\n\
+                 2026-05-15T23:59:60 leap-second\n\
+                 9999-99-99T99:99:99 all-nines\n";
+    let node2 = "2026-05-15T00:00:01.000000000 zero-nanos\n";
+    write_gz(&orig.join("debug.log-20260515-node1.gz"), node1);
+    write_gz(&orig.join("debug.log-20260515-node2.gz"), node2);
+
+    let merged_dir = dir.join("merged");
+    let merged = merged_dir.join("debug.log-20260515.zst");
+    run_ok(
+        bin()
+            .args(["merge", "--check", "-o"])
+            .arg(&merged_dir)
+            .arg(&orig),
+        "merge",
+    );
+    run_ok(
+        bin().args(["split", "-o"]).arg(&split_out).arg(&merged),
+        "split",
+    );
+    assert_eq!(
+        read_gz(&split_out.join("debug.log-20260515-node1.gz")),
+        node1
+    );
+    assert_eq!(
+        read_gz(&split_out.join("debug.log-20260515-node2.gz")),
+        node2
+    );
+
+    let text = read_zst(&merged);
+    let lines: Vec<&str> = text.lines().collect();
+    let tails: Vec<&str> = lines
+        .iter()
+        .map(|l| l.rsplit_once(' ').unwrap().1)
+        .collect();
+    assert_eq!(
+        tails,
+        vec![
+            "zero-everything",
+            "not-a-leap-year",
+            // .000000000 sorts before .999999999 across the two shapes.
+            "zero-nanos",
+            "nine-nano-digits",
+            "leap-second",
+            "all-nines",
+        ]
+    );
+}
