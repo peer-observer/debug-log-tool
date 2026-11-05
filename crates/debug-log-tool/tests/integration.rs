@@ -1001,6 +1001,12 @@ fn a_failed_merge_leaves_no_output_behind() {
         .expect("spawn merge");
     assert!(!out.status.success(), "merge should have failed");
 
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("debug.log-20260515-broken.gz"),
+        "error should name the file: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
     // The earlier good output survived, and no temp file was left lying around.
     assert_eq!(read_zst(&merged), format!("good {good}"));
     assert!(!merged_dir.join("debug.log-20260515.zst.tmp").exists());
