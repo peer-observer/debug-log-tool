@@ -11,6 +11,7 @@
 use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::ffi::OsString;
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::{self, BufRead, BufReader, Write};
@@ -206,7 +207,33 @@ pub fn run(input_dir: &Path, output_dir: Option<&Path>, level: i32, check: bool)
 ///
 /// Returns `(node, line_count, ok)` per input file (sorted by node) when
 /// `check` is set, otherwise an empty vec.
+///
+/// Writes to `<output>.tmp` and renames on success, so a run that fails
+/// part-way leaves neither a truncated merged log nor a damaged earlier one.
 fn merge_day(
+    inputs: Vec<MergeInput>,
+    output: Option<&Path>,
+    level: i32,
+    check: bool,
+) -> io::Result<Vec<(String, u64, bool)>> {
+    let tmp = output.map(|path| {
+        let mut name = OsString::from(path);
+        name.push(".tmp");
+        PathBuf::from(name)
+    });
+    let result = merge_into(inputs, tmp.as_deref(), level, check).and_then(|results| {
+        if let (Some(tmp), Some(output)) = (&tmp, output) {
+            std::fs::rename(tmp, output)?;
+        }
+        Ok(results)
+    });
+    if let (Err(_), Some(tmp)) = (&result, &tmp) {
+        let _ = std::fs::remove_file(tmp);
+    }
+    result
+}
+
+fn merge_into(
     inputs: Vec<MergeInput>,
     output: Option<&Path>,
     level: i32,

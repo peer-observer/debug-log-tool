@@ -953,3 +953,70 @@ fn templates_json_escapes_control_characters() {
         "spaces stay literal: {stdout:?}"
     );
 }
+
+/// Writes a gzip file truncated mid-stream, which decompresses part-way and
+/// then errors.
+fn write_truncated_gz(path: &Path, lines: usize) {
+    let mut content = String::new();
+    for i in 0..lines {
+        content.push_str(&format!("2026-05-15T00:00:01.{i:06}Z line-{i}\n"));
+    }
+    let mut gz = Vec::new();
+    {
+        let mut enc = GzEncoder::new(&mut gz, Compression::default());
+        enc.write_all(content.as_bytes()).unwrap();
+        enc.finish().unwrap();
+    }
+    gz.truncate(gz.len() / 2);
+    std::fs::write(path, &gz).unwrap();
+}
+
+/// A merge that fails part-way must leave no merged log at all — not a
+/// truncated one, and not in place of a good one from an earlier run.
+#[test]
+fn a_failed_merge_leaves_no_output_behind() {
+    let dir = test_dir("a_failed_merge_leaves_no_output_behind");
+    let inputs = dir.join("inputs");
+    let merged_dir = dir.join("merged");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    let good = "2026-05-15T00:00:09 good-line\n";
+    write_gz(&inputs.join("debug.log-20260515-good.gz"), good);
+
+    // First run succeeds and is the output we must not lose.
+    run_ok(
+        bin().args(["merge", "-o"]).arg(&merged_dir).arg(&inputs),
+        "merge",
+    );
+    let merged = merged_dir.join("debug.log-20260515.zst");
+    assert_eq!(read_zst(&merged), format!("good {good}"));
+
+    // Second run has an input that dies mid-stream.
+    write_truncated_gz(&inputs.join("debug.log-20260515-broken.gz"), 20_000);
+    let out = bin()
+        .args(["merge", "-o"])
+        .arg(&merged_dir)
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge");
+    assert!(!out.status.success(), "merge should have failed");
+
+    // The earlier good output survived, and no temp file was left lying around.
+    assert_eq!(read_zst(&merged), format!("good {good}"));
+    assert!(!merged_dir.join("debug.log-20260515.zst.tmp").exists());
+
+    // Same from scratch: a failed first run writes nothing at all.
+    let fresh = dir.join("fresh");
+    let out = bin()
+        .args(["merge", "-o"])
+        .arg(&fresh)
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge");
+    assert!(!out.status.success());
+    let left: Vec<_> = std::fs::read_dir(&fresh)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert!(left.is_empty(), "output dir should be empty: {left:?}");
+}
