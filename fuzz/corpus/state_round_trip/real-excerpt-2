@@ -1,0 +1,40 @@
+2025-11-16T00:00:28.372693Z [msghand] [net] sending ping (8 bytes) peer=341225
+2025-11-16T00:00:28.718042Z [net] [net] selected inbound connection for eviction, disconnecting peer=533906 peeraddr=209.222.252.221:30985
+2025-11-16T00:00:28.718304Z [msghand] [net] received: getdata (73 bytes) peer=459343
+2025-11-16T00:00:28.718329Z [msghand] [net] received getdata (2 invsz) peer=459343
+2025-11-16T00:00:28.718339Z [msghand] [net] received getdata for: witness-tx 48bc2ad9c366baf3129e475a0fb133bebbdc791fe8c241cd389cbfe2d869424b peer=459343
+2025-11-16T00:00:28.718361Z [msghand] [net] sending tx (364 bytes) peer=459343
+2025-11-16T00:00:28.718462Z [msghand] [net] sending tx (364 bytes) peer=459343
+2025-11-16T00:00:28.718487Z [net] [net] Added connection to 91.198.115.230:43962 peer=533907
+2025-11-16T00:00:28.718518Z [msghand] [net] sending addrv2 (16 bytes) peer=459343
+2025-11-16T00:00:28.718557Z [net] [net] connection from 91.198.115.230:43962 accepted
+2025-11-16T00:00:28.718832Z [net] [net] Resetting socket for peer=533906 peeraddr=209.222.252.221:30985
+2025-11-16T00:00:28.719035Z [msghand] [net] received: inv (1261 bytes) peer=110377
+2025-11-16T00:00:28.719126Z [msghand] [net] got inv: wtx 8c70bb27dcbf0d9c7ee718a6c1132b0c47d06f03c6e0b6f91d79c391a03bcd20  have peer=110377
+2025-11-16T00:00:28.719182Z [msghand] [net] got inv: wtx 0bfb747af7029686a51a480cab706c7f6ee20699160b95d64420c3214189aa14  have peer=110377
+2025-11-16T00:00:28.719264Z [msghand] [net] got inv: wtx 26b69e98e101c907a65b05638c9cc4c234518255bf2d0ff08104125893fb92c5  have peer=110377
+2025-11-16T00:00:28.719350Z [msghand] [net] got inv: wtx 700037143694e83680e1004f7ffa4a829c58db92c8404089466c2999f54ced11  have peer=110377
+2025-11-16T00:00:28.719373Z [msghand] [net] got inv: wtx 9a67e48b9393627634633e41fc4ca98765bde8041d371519d2e75bfbead08fff  new peer=110377
+2025-11-16T00:00:28.719407Z [msghand] [net] got inv: wtx 63926cea40397c43d464c3d3c73179b4b9b33974fbf750d656fe49114d24dccc  have peer=110377
+2025-11-16T00:00:28.719425Z [msghand] [net] got inv: wtx e310f8034a0420fef94198577891d2c89ff62751c2a798f4bb14c9fb98ad7ab7  new peer=110377
+2025-11-16T00:00:28.719441Z [msghand] [net] got inv: wtx 840f60bd38a27ce2658ec0adf9921d395a1ea566a0336337b7f723ef497e1bf6  have peer=110377
+2025-11-16T00:00:28.719495Z [msghand] [net] got inv: wtx c73ede4acf1b088c4ed73456bdfc287b91b04e4b76362a31872afd3ba4faef74  have peer=110377
+2025-11-16T00:00:28.719527Z [msghand] [net] got inv: wtx ad398a0791da4e06a4708a4e2a43ba642618be61533f24a6eb0f993c54f08821  have peer=110377
+2025-11-16T00:00:28.719631Z [msghand] [net] got inv: wtx 674ee442d7f7f016cf3449ce5a460186cc172f2eca051812238c1c296ab558c4  have peer=110377
+2025-11-16T00:00:28.719685Z [msghand] [net] got inv: wtx 5b2732091d1a2d11f9df99ee20cbce52c1e855dfe8370683717fe89d3ebebe7e  have peer=110377
+2025-11-16T00:00:28.719727Z [msghand] [net] got inv: wtx b05807ef77d2ae23a49d20a4201610ffcddb31c045c8d72abb10a97c28bb2999  have peer=110377
+2025-11-16T00:00:28.719928Z [msghand] [net] got inv: wtx ed1c60c169fd658aad635063efade0f3acbe33283532e4eee075f42da94ac427  have peer=110377
+2025-11-16T00:00:28.719957Z [msghand] [net] got inv: wtx fd61fab639dbba91db5e3aab1787453671be5bc28af157cd3fdd1ae9575b0938  have peer=110377
+2025-11-16T00:00:28.719969Z [msghand] [net] got inv: wtx 20324936b51818d306851e7218db205d767a3b60facf6676245c9cc0eb698233  have peer=110377
+2025-11-16T00:00:28.719980Z [msghand] [net] got inv: wtx a146ca386176a722212c39635ea18e836561f35b672810607019b16f908ae44d  have peer=110377
+2025-11-16T00:00:28.720095Z [msghand] [net] got inv: wtx 2d0ca498e7a79c7b3be1bf1183acdc8577ac68d4b9232828ed975ad80064292d  have peer=110377
+2025-11-16T00:00:28.720120Z [msghand] [net] got inv: wtx 0b28a888313d6178cf74b49a73b74f8086a711ad5d9dc9127294099b3c53f6d9  have peer=110377
+2025-11-16T00:00:28.720160Z [msghand] [net] got inv: wtx 2d70a4272fb35adaece483c91c3a2db9f02bb20f304ea0b75914e89ee42cd8c6  have peer=110377
+2025-11-16T00:00:28.720190Z [msghand] [net] got inv: wtx 4cab9226c8e34e2aef704bc64b813a44fd4eb87ce980cae48ca2983e07be0a05  have peer=110377
+2025-11-16T00:00:28.720223Z [msghand] [net] got inv: wtx e84e45eb8dafd23efdab34215826c3385525b3e13e7e530b0d6d4ac822ecc005  have peer=110377
+2025-11-16T00:00:28.720258Z [msghand] [net] got inv: wtx ad828a8c3c0f009f038ae1153d375648f60b1741038fdcdf95bd8c028a81062a  have peer=110377
+2025-11-16T00:00:28.720269Z [msghand] [net] got inv: wtx c47c3fb69a333e7234ec76335ebbc0ab02eba688da3523c2b847794552711476  have peer=110377
+2025-11-16T00:00:28.720281Z [msghand] [net] got inv: wtx a934663d4b738a451e100c2d9702446741c308a58b06bf0871a225bcf367d95f  have peer=110377
+2025-11-16T00:00:28.720298Z [msghand] [net] got inv: wtx 5fec556bbc3ac5a0e078197fb7009c78c8109d47aca3cce0fca698af014a04f3  have peer=110377
+2025-11-16T00:00:28.720312Z [msghand] [net] got inv: wtx 0b15ea398868d1c024aed3367740664ebb6bb1cd27bf89a2b53db592639f3f9a  have peer=110377
+2025-11-16T00:00:28.720360Z [msghand] [net] got inv: wtx 0fe2beee7a731e819e56ce628ff41ff0de1daa24b8cb5e07f6d4c32a5b64a2b3  have peer=110377
