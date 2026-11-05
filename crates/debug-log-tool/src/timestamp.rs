@@ -20,11 +20,10 @@ pub struct TimestampKey {
     pub nanos: u32,
 }
 
-/// Parse a leading timestamp from `s`. Returns `None` if the prefix doesn't
+/// Parse a leading timestamp from the bytes `b`. `None` if the prefix doesn't
 /// match either supported shape. Anything after the timestamp is ignored, so
 /// this is safe to call on a whole log line.
-pub fn parse_timestamp(s: &str) -> Option<TimestampKey> {
-    let b = s.as_bytes();
+pub fn parse_timestamp(b: &[u8]) -> Option<TimestampKey> {
     if b.len() < 19 {
         return None;
     }
@@ -96,9 +95,13 @@ fn parse_int<T: FromAsciiDigits>(digits: &[u8]) -> Option<T> {
 mod tests {
     use super::*;
 
+    fn parse_ts(s: &str) -> Option<TimestampKey> {
+        parse_timestamp(s.as_bytes())
+    }
+
     #[test]
     fn parses_seconds_only() {
-        let k = parse_timestamp("2026-05-15T00:06:31 hello").unwrap();
+        let k = parse_ts("2026-05-15T00:06:31 hello").unwrap();
         assert_eq!(k.year, 2026);
         assert_eq!(k.second, 31);
         assert_eq!(k.nanos, 0);
@@ -106,33 +109,33 @@ mod tests {
 
     #[test]
     fn parses_with_fractional_and_z() {
-        let k = parse_timestamp("2026-05-15T00:06:31.149660Z hello").unwrap();
+        let k = parse_ts("2026-05-15T00:06:31.149660Z hello").unwrap();
         assert_eq!(k.second, 31);
         assert_eq!(k.nanos, 149_660_000);
     }
 
     #[test]
     fn fractional_compares_against_whole_seconds() {
-        let whole = parse_timestamp("2026-05-15T00:06:31").unwrap();
-        let frac = parse_timestamp("2026-05-15T00:06:31.000001Z").unwrap();
+        let whole = parse_ts("2026-05-15T00:06:31").unwrap();
+        let frac = parse_ts("2026-05-15T00:06:31.000001Z").unwrap();
         assert!(whole < frac);
 
-        let earlier_whole = parse_timestamp("2026-05-15T00:06:30").unwrap();
-        let later_frac = parse_timestamp("2026-05-15T00:06:31.000000Z").unwrap();
+        let earlier_whole = parse_ts("2026-05-15T00:06:30").unwrap();
+        let later_frac = parse_ts("2026-05-15T00:06:31.000000Z").unwrap();
         assert!(earlier_whole < later_frac);
     }
 
     #[test]
     fn rejects_garbage() {
-        assert!(parse_timestamp("").is_none());
-        assert!(parse_timestamp("not a timestamp").is_none());
-        assert!(parse_timestamp("2026/05/15T00:06:31").is_none());
-        assert!(parse_timestamp("2026-05-15T00:06:31.").is_none());
+        assert!(parse_ts("").is_none());
+        assert!(parse_ts("not a timestamp").is_none());
+        assert!(parse_ts("2026/05/15T00:06:31").is_none());
+        assert!(parse_ts("2026-05-15T00:06:31.").is_none());
     }
 
     #[test]
     fn every_separator_must_be_in_place() {
-        assert!(parse_timestamp("2026-05-15T00:06:31").is_some());
+        assert!(parse_ts("2026-05-15T00:06:31").is_some());
         for (i, wrong) in [
             "2026_05-15T00:06:31",
             "2026-05_15T00:06:31",
@@ -144,7 +147,7 @@ mod tests {
         .enumerate()
         {
             assert!(
-                parse_timestamp(wrong).is_none(),
+                parse_ts(wrong).is_none(),
                 "separator {i} wrong but accepted: {wrong}"
             );
         }
@@ -152,13 +155,13 @@ mod tests {
 
     #[test]
     fn too_short_to_be_a_timestamp() {
-        assert!(parse_timestamp("2026-05-15T00:06:3").is_none());
-        assert!(parse_timestamp("2026-05-15T00:06:31").is_some());
+        assert!(parse_ts("2026-05-15T00:06:3").is_none());
+        assert!(parse_ts("2026-05-15T00:06:31").is_some());
     }
 
     #[test]
     fn fields_are_read_from_their_own_positions() {
-        let k = parse_timestamp("1987-02-03T04:05:06").unwrap();
+        let k = parse_ts("1987-02-03T04:05:06").unwrap();
         assert_eq!(
             (k.year, k.month, k.day, k.hour, k.minute, k.second),
             (1987, 2, 3, 4, 5, 6)
@@ -167,17 +170,17 @@ mod tests {
 
     #[test]
     fn fractional_digits_scale_to_nanos() {
-        let nanos = |s: &str| parse_timestamp(s).unwrap().nanos;
+        let nanos = |s: &str| parse_ts(s).unwrap().nanos;
         assert_eq!(nanos("2026-05-15T00:06:31.1Z"), 100_000_000);
         assert_eq!(nanos("2026-05-15T00:06:31.000001Z"), 1_000);
         assert_eq!(nanos("2026-05-15T00:06:31.123456789"), 123_456_789);
         // Ten digits is more precision than nanos hold, so no timestamp.
-        assert!(parse_timestamp("2026-05-15T00:06:31.1234567890").is_none());
+        assert!(parse_ts("2026-05-15T00:06:31.1234567890").is_none());
     }
 
     #[test]
     fn out_of_range_fields_are_rejected() {
-        assert!(parse_timestamp("2026-05-15T00:06:9x").is_none());
-        assert!(parse_timestamp("2026-05-15T00:0-:31").is_none());
+        assert!(parse_ts("2026-05-15T00:06:9x").is_none());
+        assert!(parse_ts("2026-05-15T00:0-:31").is_none());
     }
 }
