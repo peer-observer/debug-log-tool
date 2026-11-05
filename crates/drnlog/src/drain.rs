@@ -98,7 +98,7 @@ impl Drain {
         self.threshold
     }
 
-    /// Folds `tokens` into the tree, updating `count` / `last_seen` on
+    /// Folds `tokens` into the tree, updating `count` and the seen range on
     /// match or spawning a new cluster. Borrowing, no allocation if the
     /// hot path lands on an existing cluster (apart from `String`s for
     /// `ts` and any newly-introduced `Star`s — `Star` is payload-free).
@@ -126,11 +126,16 @@ impl Drain {
                 }
             }
             c.count += 1;
-            if c.first_seen.is_none() {
-                c.first_seen = ts.map(|s| s.to_string());
-            }
+            // Widen the range rather than trusting ingest order: state loaded
+            // from an earlier day can arrive after a later one. Both timestamp
+            // shapes bitcoind emits order correctly as strings.
             if let Some(t) = ts {
-                c.last_seen = Some(t.to_string());
+                if c.first_seen.as_deref().is_none_or(|f| t < f) {
+                    c.first_seen = Some(t.to_string());
+                }
+                if c.last_seen.as_deref().is_none_or(|l| t > l) {
+                    c.last_seen = Some(t.to_string());
+                }
             }
             return;
         }
@@ -377,5 +382,37 @@ mod tests {
     fn depth_is_clamped_to_two() {
         assert_eq!(Drain::new(0, 0.5).depth(), 2);
         assert_eq!(Drain::new(7, 0.5).depth(), 7);
+    }
+
+    #[test]
+    fn seen_range_widens_whatever_the_ingest_order() {
+        let mut d = Drain::new(4, 0.5);
+        d.add_tokens(&line("hello"), Some("2026-06-05T00:00:00Z"));
+        d.add_tokens(&line("hello"), Some("2026-06-01T00:00:00Z"));
+        d.add_tokens(&line("hello"), Some("2026-06-03T00:00:00Z"));
+        let c = d.clusters().next().unwrap();
+        assert_eq!(c.first_seen.as_deref(), Some("2026-06-01T00:00:00Z"));
+        assert_eq!(c.last_seen.as_deref(), Some("2026-06-05T00:00:00Z"));
+    }
+
+    #[test]
+    fn the_two_timestamp_shapes_order_against_each_other() {
+        let mut d = Drain::new(4, 0.5);
+        d.add_tokens(&line("hello"), Some("2026-06-01T00:00:31.500000Z"));
+        d.add_tokens(&line("hello"), Some("2026-06-01T00:00:31"));
+        d.add_tokens(&line("hello"), Some("2026-06-01T00:00:32"));
+        let c = d.clusters().next().unwrap();
+        assert_eq!(c.first_seen.as_deref(), Some("2026-06-01T00:00:31"));
+        assert_eq!(c.last_seen.as_deref(), Some("2026-06-01T00:00:32"));
+    }
+
+    #[test]
+    fn a_timestampless_line_leaves_the_range_alone() {
+        let mut d = Drain::new(4, 0.5);
+        d.add_tokens(&line("hello"), Some("2026-06-01T00:00:00Z"));
+        d.add_tokens(&line("hello"), None);
+        let c = d.clusters().next().unwrap();
+        assert_eq!(c.first_seen.as_deref(), Some("2026-06-01T00:00:00Z"));
+        assert_eq!(c.last_seen.as_deref(), Some("2026-06-01T00:00:00Z"));
     }
 }
