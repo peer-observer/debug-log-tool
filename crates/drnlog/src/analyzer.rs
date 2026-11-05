@@ -89,12 +89,14 @@ impl Analyzer {
         Ok(())
     }
 
-    /// Atomic save: writes to `path.tmp` and renames over `path` on
-    /// success. Avoids leaving a half-written state file if the process
-    /// dies mid-write.
+    /// Atomic save: writes to a temp file beside `path` and renames over it
+    /// on success. Avoids leaving a half-written state file if the process
+    /// dies mid-write, and the temp name carries the process id so two
+    /// catalogues being saved to one path can't interleave into each other's
+    /// file — the later rename simply wins.
     pub fn save_atomic(&self, path: &Path) -> io::Result<()> {
         let mut tmp_os = OsString::from(path);
-        tmp_os.push(".tmp");
+        tmp_os.push(format!(".{}.tmp", std::process::id()));
         let tmp = Path::new(&tmp_os);
         {
             let f = fs::File::create(tmp)?;
@@ -562,12 +564,12 @@ mod tests {
         a.ingest_line("2026-06-06T12:00:00Z [net] received: ping peer=1");
         a.save_atomic(&path).unwrap();
         assert!(path.exists());
-        let tmp_path = {
-            let mut p = OsString::from(&path);
-            p.push(".tmp");
-            std::path::PathBuf::from(p)
-        };
-        assert!(!tmp_path.exists(), "tmp should have been renamed away");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
 
         let f = std::fs::File::open(&path).unwrap();
         let b = Analyzer::load(io::BufReader::new(f)).unwrap();
