@@ -174,6 +174,19 @@ fn merge_check_verifies_round_trip_without_writing() {
         "summary missing: {stdout}"
     );
     assert!(!stdout.contains("FAIL"), "unexpected failure: {stdout}");
+    // Per-file line counts, keyed by day since node1 appears in both.
+    assert!(
+        stdout.contains("20260515  node1          OK    3 lines"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("20260515  node2          OK    1 lines"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("20260516  node1          OK    1 lines"),
+        "{stdout}"
+    );
     // Nothing was written: no output dir was passed and none was created.
     assert!(!dir.join("merged").exists());
 }
