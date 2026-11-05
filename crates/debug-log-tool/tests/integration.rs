@@ -700,3 +700,72 @@ fn merge_input_discovery_rejects_unusable_names() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("node 5"), "stderr: {stderr}");
 }
+
+/// A debug.log can hold bytes that are not valid UTF-8 (anything a peer sent,
+/// or a rotated file cut mid-character). Those must round-trip untouched.
+#[test]
+fn non_utf8_bytes_round_trip_and_still_cluster() {
+    let dir = test_dir("non_utf8_bytes_round_trip_and_still_cluster");
+    let orig = dir.join("orig");
+    let split_out = dir.join("split-out");
+    std::fs::create_dir_all(&orig).unwrap();
+
+    let mut node1: Vec<u8> = b"2026-05-15T00:00:01 [net] receive version message: /".to_vec();
+    node1.extend_from_slice(&[0xff, 0xfe, 0x80]);
+    node1.extend_from_slice(b"/ peer=1\n2026-05-15T00:00:03 [net] plain line peer=2\n");
+    let node2 = b"2026-05-15T00:00:02 [net] plain line peer=3\n".to_vec();
+
+    let write_raw = |path: &Path, bytes: &[u8]| {
+        let f = std::fs::File::create(path).unwrap();
+        let mut enc = GzEncoder::new(f, Compression::default());
+        enc.write_all(bytes).unwrap();
+        enc.finish().unwrap();
+    };
+    write_raw(&orig.join("debug.log-20260515-node1.gz"), &node1);
+    write_raw(&orig.join("debug.log-20260515-node2.gz"), &node2);
+
+    let merged_dir = dir.join("merged");
+    let merged = merged_dir.join("debug.log-20260515.zst");
+    run_ok(
+        bin()
+            .args(["merge", "--check", "-o"])
+            .arg(&merged_dir)
+            .arg(&orig),
+        "merge",
+    );
+    run_ok(
+        bin().args(["split", "-o"]).arg(&split_out).arg(&merged),
+        "split",
+    );
+
+    let read_raw = |path: &Path| -> Vec<u8> {
+        let f = std::fs::File::open(path).unwrap();
+        let mut dec = MultiGzDecoder::new(f);
+        let mut v = Vec::new();
+        dec.read_to_end(&mut v).unwrap();
+        v
+    };
+    assert_eq!(
+        read_raw(&split_out.join("debug.log-20260515-node1.gz")),
+        node1
+    );
+    assert_eq!(
+        read_raw(&split_out.join("debug.log-20260515-node2.gz")),
+        node2
+    );
+
+    // `templates` reads the same file without giving up on it.
+    let out = bin()
+        .arg("templates")
+        .arg(&merged)
+        .output()
+        .expect("spawn templates");
+    assert!(
+        out.status.success(),
+        "templates failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("=== net ==="), "{stdout}");
+    assert!(stdout.contains("plain line <PEER>"), "{stdout}");
+}

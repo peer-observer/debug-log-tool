@@ -36,13 +36,16 @@ pub fn run(input: Option<&Path>, opts: TemplatesOpts) -> io::Result<()> {
 
     if let Some(path) = input {
         let (kind, mut reader) = open_input(path)?;
-        let mut buf = String::new();
+        let mut buf: Vec<u8> = Vec::new();
         loop {
             buf.clear();
-            if reader.read_line(&mut buf)? == 0 {
+            if reader.read_until(b'\n', &mut buf)? == 0 {
                 break;
             }
-            let line = buf.trim_end_matches(['\r', '\n']);
+            // Read as bytes and decode leniently: one stray byte in a log
+            // shouldn't abort the whole run.
+            let decoded = String::from_utf8_lossy(&buf);
+            let line = decoded.trim_end_matches(['\r', '\n']);
             let content = match kind {
                 InputKind::Zstd => strip_node_prefix(line),
                 _ => line,

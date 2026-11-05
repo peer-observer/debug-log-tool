@@ -94,17 +94,19 @@ impl Reader {
         })
     }
 
-    fn next_line(&mut self) -> io::Result<Option<(TimestampKey, String)>> {
-        let mut buf = String::new();
-        if self.inner.read_line(&mut buf)? == 0 {
+    fn next_line(&mut self) -> io::Result<Option<(TimestampKey, Vec<u8>)>> {
+        // Bytes, not text: a debug.log can hold anything a peer sent, and a
+        // truncated gzip can cut a character in half.
+        let mut buf = Vec::new();
+        if self.inner.read_until(b'\n', &mut buf)? == 0 {
             return Ok(None);
         }
         // Without a newline here, the next line written continues this one.
-        if !buf.ends_with('\n') {
-            buf.push('\n');
+        if buf.last() != Some(&b'\n') {
+            buf.push(b'\n');
         }
         if let Some(h) = self.input_hasher.as_mut() {
-            h.write(buf.as_bytes());
+            h.write(&buf);
         }
         let key = parse_timestamp(&buf).unwrap_or(self.last_key);
         self.last_key = key;
@@ -116,7 +118,7 @@ impl Reader {
 struct HeapEntry {
     key: TimestampKey,
     reader_idx: usize,
-    line: String,
+    line: Vec<u8>,
 }
 
 impl Ord for HeapEntry {
@@ -218,11 +220,11 @@ fn merge_day(
     // Per-node hash of the split-reconstructed content, plus a line count.
     // Pre-seed every node so an empty input file (which emits nothing) still
     // compares as the hash of empty content rather than a missing entry.
-    let mut roundtrip: HashMap<String, (DefaultHasher, u64)> = HashMap::new();
+    let mut roundtrip: HashMap<Vec<u8>, (DefaultHasher, u64)> = HashMap::new();
     if check {
         for r in &readers {
             roundtrip
-                .entry(r.node.clone())
+                .entry(r.node.clone().into_bytes())
                 .or_insert_with(|| (DefaultHasher::new(), 0));
         }
     }
@@ -243,7 +245,7 @@ fn merge_day(
         None => None,
     };
 
-    let mut merged = String::new();
+    let mut merged: Vec<u8> = Vec::new();
     let mut line_no = 0u64;
     while let Some(Reverse(entry)) = heap.pop() {
         line_no += 1;
@@ -252,22 +254,22 @@ fn merge_day(
             if let Some(enc) = encoder.as_mut() {
                 enc.write_all(node.as_bytes())?;
                 enc.write_all(b" ")?;
-                enc.write_all(entry.line.as_bytes())?;
+                enc.write_all(&entry.line)?;
             }
             if check {
                 // Reconstruct exactly the bytes `merge` emits for this line.
                 merged.clear();
-                merged.push_str(node);
-                merged.push(' ');
-                merged.push_str(&entry.line);
+                merged.extend_from_slice(node.as_bytes());
+                merged.push(b' ');
+                merged.extend_from_slice(&entry.line);
             }
         }
         if check {
             // Route it back through the real `split` parser — the same code
             // path the `split` subcommand uses — and hash what it recovers.
             let (node, rest) = split::split_prefix(&merged, line_no)?;
-            let (hasher, count) = roundtrip.entry(node.to_string()).or_default();
-            hasher.write(rest.as_bytes());
+            let (hasher, count) = roundtrip.entry(node.to_vec()).or_default();
+            hasher.write(rest);
             *count += 1;
         }
         if let Some((key, line)) = readers[entry.reader_idx].next_line()? {
@@ -293,7 +295,9 @@ fn merge_day(
             .as_ref()
             .expect("check mode enables input hashing")
             .finish();
-        let (hasher, count) = roundtrip.get(&r.node).expect("node pre-seeded above");
+        let (hasher, count) = roundtrip
+            .get(r.node.as_bytes())
+            .expect("node pre-seeded above");
         let ok = hasher.finish() == input_hash;
         results.push((r.node.clone(), *count, ok));
     }

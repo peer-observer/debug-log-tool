@@ -26,13 +26,15 @@ pub fn run(input: &Path, output_dir: &Path) -> io::Result<()> {
     let dec = zstd::Decoder::new(f)?;
     let mut reader = BufReader::new(dec);
 
-    let mut writers: HashMap<String, GzEncoder<File>> = HashMap::new();
+    let mut writers: HashMap<Vec<u8>, GzEncoder<File>> = HashMap::new();
 
-    let mut buf = String::new();
+    // Lines are bytes: a debug.log holds whatever the node logged, and split
+    // has to hand every byte back unchanged.
+    let mut buf: Vec<u8> = Vec::new();
     let mut line_no: u64 = 0;
     loop {
         buf.clear();
-        if reader.read_line(&mut buf)? == 0 {
+        if reader.read_until(b'\n', &mut buf)? == 0 {
             break;
         }
         line_no += 1;
@@ -40,17 +42,15 @@ pub fn run(input: &Path, output_dir: &Path) -> io::Result<()> {
         let (node, rest) = split_prefix(&buf, line_no)?;
 
         if !writers.contains_key(node) {
-            let path = output_dir.join(format!("{FILE_PREFIX}{date}-{node}.gz"));
+            let name = String::from_utf8_lossy(node);
+            let path = output_dir.join(format!("{FILE_PREFIX}{date}-{name}.gz"));
             let file = File::create(&path)?;
-            writers.insert(
-                node.to_string(),
-                GzEncoder::new(file, Compression::default()),
-            );
+            writers.insert(node.to_vec(), GzEncoder::new(file, Compression::default()));
         }
         writers
             .get_mut(node)
             .expect("just inserted")
-            .write_all(rest.as_bytes())?;
+            .write_all(rest)?;
     }
 
     for (_, w) in writers.drain() {
@@ -63,8 +63,8 @@ pub fn run(input: &Path, output_dir: &Path) -> io::Result<()> {
 /// where `<rest>` is the original per-node log line. This is the exact inverse
 /// of the `<node> ` prefix `merge` prepends, and is shared with `merge --check`
 /// so the round-trip self-check exercises the same parsing the real split does.
-pub(crate) fn split_prefix(line: &str, line_no: u64) -> io::Result<(&str, &str)> {
-    let Some(sp) = line.find(' ') else {
+pub(crate) fn split_prefix(line: &[u8], line_no: u64) -> io::Result<(&[u8], &[u8])> {
+    let Some(sp) = line.iter().position(|&b| b == b' ') else {
         return Err(invalid(format!("line {line_no}: missing `<node> ` prefix")));
     };
     Ok((&line[..sp], &line[sp + 1..]))
