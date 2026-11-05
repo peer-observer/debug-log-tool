@@ -248,21 +248,26 @@ fn merge_and_verify(
     level: i32,
     check: bool,
 ) -> io::Result<Vec<(String, u64, bool)>> {
-    let Some(checkable) = merge_into(inputs, tmp, level, check)? else {
+    // Prefer re-reading the file just written; with no file to re-read, the
+    // stream has to be digested as it is assembled.
+    let verify = match (check, tmp) {
+        (false, _) => Verify::Off,
+        (true, Some(_)) => Verify::ReadBack,
+        (true, None) => Verify::Stream,
+    };
+    let Some(digested) = merge_into(inputs, tmp, level, verify)? else {
         if let (Some(tmp), Some(output)) = (tmp, output) {
             std::fs::rename(tmp, output)?;
         }
         return Ok(Vec::new());
     };
 
-    let written = match (tmp, checkable.stream) {
-        // Re-read what was actually written.
-        (Some(tmp), _) => read_back(tmp, &checkable.inputs)?,
-        // Nothing was written, so judge the stream as it was assembled.
+    let written = match (tmp, digested.stream) {
+        (Some(tmp), _) => read_back(tmp)?,
         (None, Some(stream)) => stream.finish(),
-        (None, None) => unreachable!("check without an output file digests the stream"),
+        (None, None) => unreachable!("Verify::Stream digests the stream"),
     };
-    let results = compare(&checkable.inputs, &written);
+    let results = compare(&digested.inputs, &written);
 
     if let (Some(tmp), Some(output)) = (tmp, output) {
         if results.iter().all(|(_, _, ok)| *ok) {
@@ -278,11 +283,8 @@ fn merge_and_verify(
 }
 
 /// Decompress a merged log and digest it per node, the way `split` reads it.
-fn read_back(path: &Path, inputs: &[(String, u64)]) -> io::Result<HashMap<Vec<u8>, (u64, u64)>> {
+fn read_back(path: &Path) -> io::Result<HashMap<Vec<u8>, (u64, u64)>> {
     let mut digests = Digests::default();
-    for (node, _) in inputs {
-        digests.seed(node);
-    }
     let f = File::open(path).map_err(|e| at_path(path, e))?;
     let mut reader = BufReader::new(zstd::Decoder::new(f).map_err(|e| at_path(path, e))?);
     let mut line = Vec::new();
@@ -327,14 +329,6 @@ fn compare(
 struct Digests(HashMap<Vec<u8>, (DefaultHasher, u64)>);
 
 impl Digests {
-    /// Start a node at the digest of empty content, so an input that
-    /// contributes no lines compares as empty rather than as missing.
-    fn seed(&mut self, node: &str) {
-        self.0
-            .entry(node.as_bytes().to_vec())
-            .or_insert_with(|| (DefaultHasher::new(), 0));
-    }
-
     fn feed(&mut self, line: &[u8], line_no: u64) -> io::Result<()> {
         let (node, rest) = split::split_prefix(line, line_no)?;
         let (hasher, count) = self.0.entry(node.to_vec()).or_default();
@@ -352,10 +346,19 @@ impl Digests {
     }
 }
 
-/// What one merge pass produced for `--check` to judge: the digest of each
-/// input's content, and — only when nothing was written and so nothing can be
-/// re-read — the digest of the stream as it was assembled.
-struct Checkable {
+/// How `--check` gets at the merged bytes it has to judge.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Verify {
+    Off,
+    /// Decompress and split the file that was just written.
+    ReadBack,
+    /// Digest the stream while assembling it, for a check that writes nothing.
+    Stream,
+}
+
+/// What one merge pass gives `--check` to judge: the digest of each input's
+/// content, plus the digest of the assembled stream under [`Verify::Stream`].
+struct Digested {
     inputs: Vec<(String, u64)>,
     stream: Option<Digests>,
 }
@@ -364,22 +367,14 @@ fn merge_into(
     inputs: Vec<MergeInput>,
     output: Option<&Path>,
     level: i32,
-    check: bool,
-) -> io::Result<Option<Checkable>> {
+    verify: Verify,
+) -> io::Result<Option<Digested>> {
     let mut readers: Vec<Reader> = inputs
         .into_iter()
-        .map(|i| Reader::open(i, check))
+        .map(|i| Reader::open(i, verify != Verify::Off))
         .collect::<io::Result<_>>()?;
 
-    // With an output file the check re-reads it afterwards; with no file to
-    // re-read, digest the stream as we build it.
-    let mut stream = (check && output.is_none()).then(|| {
-        let mut d = Digests::default();
-        for r in &readers {
-            d.seed(&r.node);
-        }
-        d
-    });
+    let mut stream = (verify == Verify::Stream).then(Digests::default);
 
     let mut heap: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::new();
     for (idx, r) in readers.iter_mut().enumerate() {
@@ -432,7 +427,7 @@ fn merge_into(
         enc.finish()?;
     }
 
-    if !check {
+    if verify == Verify::Off {
         return Ok(None);
     }
     let inputs = readers
@@ -446,7 +441,7 @@ fn merge_into(
             (r.node.clone(), hash)
         })
         .collect();
-    Ok(Some(Checkable { inputs, stream }))
+    Ok(Some(Digested { inputs, stream }))
 }
 
 #[cfg(test)]
@@ -491,7 +486,7 @@ mod tests {
             ),
             ("bb".to_string(), hash_of(b"2026-05-15T00:00:02 two\n")),
         ];
-        let written = read_back(&merged, &inputs).unwrap();
+        let written = read_back(&merged).unwrap();
         assert_eq!(
             compare(&inputs, &written),
             vec![("aa".to_string(), 2, true), ("bb".to_string(), 1, true)],
@@ -514,7 +509,7 @@ mod tests {
             ("aa".to_string(), hash_of(b"2026-05-15T00:00:01 one\n")),
             ("bb".to_string(), hash_of(b"2026-05-15T00:00:02 two\n")),
         ];
-        let written = read_back(&merged, &inputs).unwrap();
+        let written = read_back(&merged).unwrap();
         assert_eq!(
             compare(&inputs, &written),
             vec![("aa".to_string(), 1, true), ("bb".to_string(), 1, false)],
@@ -538,7 +533,7 @@ mod tests {
                 hash_of(b"2026-05-15T00:00:02 gone\n"),
             ),
         ];
-        let written = read_back(&merged, &inputs).unwrap();
+        let written = read_back(&merged).unwrap();
         assert_eq!(
             compare(&inputs, &written),
             vec![
@@ -558,8 +553,7 @@ mod tests {
         let merged = dir.join("debug.log-20260515.zst");
         write_zst(&merged, b"aa 2026-05-15T00:00:01 one\nno-prefix\n");
 
-        let inputs = vec![("aa".to_string(), hash_of(b"2026-05-15T00:00:01 one\n"))];
-        let err = read_back(&merged, &inputs).unwrap_err();
+        let err = read_back(&merged).unwrap_err();
         assert!(err.to_string().contains("line 2"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
