@@ -866,6 +866,10 @@ mod tests {
         assert!(kinds("1:::2").is_empty(), "three colons");
         assert!(kinds("12345::1").is_empty(), "group too long");
         assert!(kinds("zzzz::1").is_empty(), "not hex");
+        assert!(
+            kinds("1:2:3:4:5:6:7:8::9").is_empty(),
+            "elision on top of eight groups"
+        );
     }
 
     #[test]

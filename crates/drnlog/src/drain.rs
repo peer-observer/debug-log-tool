@@ -382,6 +382,7 @@ mod tests {
     fn depth_is_clamped_to_two() {
         assert_eq!(Drain::new(0, 0.5).depth(), 2);
         assert_eq!(Drain::new(7, 0.5).depth(), 7);
+        assert_eq!(Drain::new(4, 0.25).threshold(), 0.25);
     }
 
     #[test]
@@ -414,5 +415,18 @@ mod tests {
         let c = d.clusters().next().unwrap();
         assert_eq!(c.first_seen.as_deref(), Some("2026-06-01T00:00:00Z"));
         assert_eq!(c.last_seen.as_deref(), Some("2026-06-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn a_star_counts_as_a_match_when_scoring_similarity() {
+        let mut d = Drain::new(4, 0.75);
+        d.add_tokens(&line("The event named foo is done"), None);
+        d.add_tokens(&line("The event named bar is done"), None);
+        // Differs at the starred position and at one more: 5 of 6 only if the
+        // star counts as a match, which is over the threshold; 4 of 6 is not.
+        d.add_tokens(&line("The event named baz is gone"), None);
+        let clusters: Vec<&Cluster> = d.clusters().collect();
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].count, 3);
     }
 }
