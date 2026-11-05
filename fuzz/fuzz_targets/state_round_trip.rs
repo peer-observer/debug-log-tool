@@ -1,0 +1,3 @@
+#![no_main]
+
+libfuzzer_sys::fuzz_target!(|data: &[u8]| drnlog_fuzz::state_round_trip(data));

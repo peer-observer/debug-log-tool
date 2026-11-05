@@ -1,0 +1,6 @@
+# cargo-fuzz build output and crash artifacts
+target/
+artifacts/
+coverage/
+# Working corpora the fuzzer grows locally; `corpus/` holds curated seeds.
+local/
