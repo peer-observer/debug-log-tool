@@ -6,8 +6,8 @@
 //!    (`(`, `)`, `'`, trailing `:` / `,`). `=` is split too *except* on
 //!    recognizer-protected prefixes (`peer=`, `height=`) where the
 //!    classifier wants to fold the whole `peer=1234` slice. `[…]` brackets
-//!    are split too except when they look like an IPv6-with-port wrapper
-//!    so `[::1]:8333` stays whole.
+//!    are split too, except an `[ipv6]:port` run, which stays whole even
+//!    after a `key=` prefix.
 //! 2. **Classification** — try a fixed slice of recognizer functions in
 //!    priority order. Each recognizer takes the current atom plus a peek
 //!    at the next atom (for two-atom folds like `42 bytes` → `<BYTES>`).
@@ -230,7 +230,7 @@ fn split_atom<'a>(s: &'a str, out: &mut Vec<&'a str>) {
     };
 
     // Protected tokens recognizers want to see whole.
-    if looks_like_ipv6_port(body) || body.starts_with("peer=") || body.starts_with("height=") {
+    if body.starts_with("peer=") || body.starts_with("height=") {
         out.push(body);
         if let Some(t) = trailing_sep {
             out.push(t);
@@ -242,6 +242,16 @@ fn split_atom<'a>(s: &'a str, out: &mut Vec<&'a str>) {
     let mut start = 0;
     let mut i = 0;
     while i < bytes.len() {
+        // An `[ipv6]:port` run survives the bracket split, wherever it
+        // starts — `us=[::1]:8333` as much as a bare `[::1]:8333`.
+        if i == start
+            && let Some(n) = ipv6_port_prefix_len(&body[i..])
+        {
+            out.push(&body[i..i + n]);
+            i += n;
+            start = i;
+            continue;
+        }
         let c = bytes[i];
         if matches!(c, b'=' | b'(' | b')' | b'[' | b']' | b'\'' | b'/') {
             if i > start {
@@ -262,8 +272,16 @@ fn split_atom<'a>(s: &'a str, out: &mut Vec<&'a str>) {
     }
 }
 
-fn looks_like_ipv6_port(s: &str) -> bool {
-    s.starts_with('[') && s.contains("]:") && s.contains(':')
+/// Length of the leading `[<ipv6>]:<port>` run of `s`, if it has one.
+fn ipv6_port_prefix_len(s: &str) -> Option<usize> {
+    let rest = s.strip_prefix('[')?;
+    let close = rest.find("]:")?;
+    let after = &rest[close + 2..];
+    let port_len = after.bytes().take_while(u8::is_ascii_digit).count();
+    if !is_ipv6(&rest[..close]) || !is_port(&after[..port_len]) {
+        return None;
+    }
+    Some(1 + close + 2 + port_len)
 }
 
 // ---------------------------------------------------------------------------
@@ -848,5 +866,24 @@ mod tests {
         assert!(kinds("1:::2").is_empty(), "three colons");
         assert!(kinds("12345::1").is_empty(), "group too long");
         assert!(kinds("zzzz::1").is_empty(), "not hex");
+    }
+
+    #[test]
+    fn ipv6_port_stays_whole_after_a_key_prefix() {
+        assert_eq!(render("us=[2001:db8::1]:8333,"), "us = <IPv6:PORT> ,");
+        assert_eq!(
+            render("(peeraddr=[::1]:8333)"),
+            "( peeraddr = <IPv6:PORT> )"
+        );
+        assert_eq!(render("[::1]:8333"), "<IPv6:PORT>");
+
+        // Not an address-port run, so the brackets split as usual.
+        assert_eq!(render("new[64]"), "new [ <INT> ]");
+        assert_eq!(render("[nothex]:8333"), "[ nothex ] :8333");
+        assert_eq!(
+            render("[::1]:99999"),
+            "[ <IPv6> ] :99999",
+            "port out of range"
+        );
     }
 }
