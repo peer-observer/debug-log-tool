@@ -554,3 +554,92 @@ fn save_state_is_byte_identical_across_runs() {
     assert!(a.lines().count() > 20, "expected many clusters: {a}");
     assert_eq!(a, b, "state files must be reproducible across runs");
 }
+
+/// `templates` on a merged `.zst` must strip the `<node> ` prefix merge added,
+/// otherwise every line looks timestamp-less and loses its category.
+#[test]
+fn templates_strips_the_node_prefix_from_merged_input() {
+    let dir = test_dir("templates_strips_the_node_prefix_from_merged_input");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    let per_node = "2026-05-15T00:00:01 [net] received: ping (8 bytes) peer=1\n\
+                    2026-05-15T00:00:02 [validation] UpdateTip: new best=aa\n";
+    for node in ["alpha", "beta"] {
+        write_gz(
+            &inputs.join(format!("debug.log-20260515-{node}.gz")),
+            per_node,
+        );
+    }
+    let merged_dir = dir.join("merged");
+    run_ok(
+        bin().args(["merge", "-o"]).arg(&merged_dir).arg(&inputs),
+        "merge",
+    );
+
+    let out = bin()
+        .arg("templates")
+        .arg(merged_dir.join("debug.log-20260515.zst"))
+        .output()
+        .expect("spawn templates");
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("=== net ==="), "categories: {stdout}");
+    assert!(stdout.contains("=== validation ==="), "{stdout}");
+    assert!(
+        !stdout.contains("alpha") && !stdout.contains("beta"),
+        "node name leaked into a template: {stdout}"
+    );
+    assert!(
+        !stdout.contains("(no category)"),
+        "prefix not stripped: {stdout}"
+    );
+    // Two nodes, one line each per template.
+    assert!(stdout.contains("     2 received"), "{stdout}");
+}
+
+/// `--min-count`, `--top` and `--category` each narrow the report.
+#[test]
+fn templates_filters_by_count_rank_and_category() {
+    let dir = test_dir("templates_filters_by_count_rank_and_category");
+    let fixture = dir.join("debug.log");
+
+    let mut content = String::new();
+    for _ in 0..5 {
+        content.push_str("2026-06-06T12:00:00Z [net] common line one two\n");
+    }
+    for _ in 0..2 {
+        content.push_str("2026-06-06T12:00:00Z [net] rare line three four\n");
+    }
+    content.push_str("2026-06-06T12:00:00Z [bench] other category line\n");
+    std::fs::write(&fixture, &content).unwrap();
+
+    let report = |args: &[&str]| -> String {
+        let out = bin()
+            .arg("templates")
+            .arg(&fixture)
+            .args(args)
+            .output()
+            .expect("spawn templates");
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    let all = report(&[]);
+    assert!(all.contains("common") && all.contains("rare") && all.contains("other"));
+
+    let min = report(&["--min-count", "3"]);
+    assert!(min.contains("common"), "{min}");
+    assert!(!min.contains("rare"), "count 2 should be dropped: {min}");
+    assert!(!min.contains("other"), "count 1 should be dropped: {min}");
+
+    // Sorted by count descending, so the top one is the common template.
+    let top = report(&["--top", "1"]);
+    assert!(top.contains("common") && !top.contains("rare"), "{top}");
+    assert!(top.contains("other"), "--top is per category: {top}");
+
+    let only_net = report(&["--category", "net"]);
+    assert!(only_net.contains("common") && only_net.contains("rare"));
+    assert!(!only_net.contains("other"), "{only_net}");
+    assert!(!only_net.contains("=== bench ==="), "{only_net}");
+}
