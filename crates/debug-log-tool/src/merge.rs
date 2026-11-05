@@ -146,7 +146,13 @@ impl PartialOrd for HeapEntry {
     }
 }
 
-pub fn run(input_dir: &Path, output_dir: Option<&Path>, level: i32, check: bool) -> io::Result<()> {
+pub fn run(
+    input_dir: &Path,
+    output_dir: Option<&Path>,
+    level: i32,
+    jobs: u32,
+    check: bool,
+) -> io::Result<()> {
     let inputs = discover_inputs(input_dir)?;
     if inputs.is_empty() {
         return Err(io::Error::new(
@@ -188,7 +194,7 @@ pub fn run(input_dir: &Path, output_dir: Option<&Path>, level: i32, check: bool)
     let mut ok_count = 0usize;
     for (date, group) in by_date {
         let output = output_dir.map(|dir| dir.join(format!("{FILE_PREFIX}{date}.zst")));
-        for (node, lines, ok) in merge_day(group, output.as_deref(), level, check)? {
+        for (node, lines, ok) in merge_day(group, output.as_deref(), level, jobs, check)? {
             total += 1;
             if ok {
                 ok_count += 1;
@@ -225,6 +231,7 @@ fn merge_day(
     inputs: Vec<MergeInput>,
     output: Option<&Path>,
     level: i32,
+    jobs: u32,
     check: bool,
 ) -> io::Result<Vec<(String, u64, bool)>> {
     let tmp = output.map(|path| {
@@ -234,7 +241,7 @@ fn merge_day(
         name.push(format!(".{}.tmp", std::process::id()));
         PathBuf::from(name)
     });
-    let result = merge_and_verify(inputs, tmp.as_deref(), output, level, check);
+    let result = merge_and_verify(inputs, tmp.as_deref(), output, level, jobs, check);
     if let (Err(_), Some(tmp)) = (&result, &tmp) {
         let _ = std::fs::remove_file(tmp);
     }
@@ -246,6 +253,7 @@ fn merge_and_verify(
     tmp: Option<&Path>,
     output: Option<&Path>,
     level: i32,
+    jobs: u32,
     check: bool,
 ) -> io::Result<Vec<(String, u64, bool)>> {
     // Prefer re-reading the file just written; with no file to re-read, the
@@ -255,7 +263,7 @@ fn merge_and_verify(
         (true, Some(_)) => Verify::ReadBack,
         (true, None) => Verify::Stream,
     };
-    let Some(digested) = merge_into(inputs, tmp, level, verify)? else {
+    let Some(digested) = merge_into(inputs, tmp, level, jobs, verify)? else {
         if let (Some(tmp), Some(output)) = (tmp, output) {
             std::fs::rename(tmp, output)?;
         }
@@ -280,6 +288,25 @@ fn merge_and_verify(
         }
     }
     Ok(results)
+}
+
+/// A zstd encoder with `jobs` compression workers, where 0 means every
+/// core. The merged content is identical whatever the count; only the
+/// compressed framing differs, by well under a percent.
+fn new_encoder<W: Write>(
+    writer: W,
+    level: i32,
+    jobs: u32,
+) -> io::Result<zstd::Encoder<'static, W>> {
+    let mut encoder = zstd::Encoder::new(writer, level)?;
+    let workers = match jobs {
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get() as u32),
+        n => n,
+    };
+    if workers > 1 {
+        encoder.multithread(workers)?;
+    }
+    Ok(encoder)
 }
 
 /// Decompress a merged log and digest it per node, the way `split` reads it.
@@ -367,6 +394,7 @@ fn merge_into(
     inputs: Vec<MergeInput>,
     output: Option<&Path>,
     level: i32,
+    jobs: u32,
     verify: Verify,
 ) -> io::Result<Option<Digested>> {
     let mut readers: Vec<Reader> = inputs
@@ -388,7 +416,7 @@ fn merge_into(
     }
 
     let mut encoder = match output {
-        Some(path) => Some(zstd::Encoder::new(File::create(path)?, level)?),
+        Some(path) => Some(new_encoder(File::create(path)?, level, jobs)?),
         None => None,
     };
 
