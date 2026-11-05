@@ -129,4 +129,55 @@ mod tests {
         assert!(parse_timestamp("2026/05/15T00:06:31").is_none());
         assert!(parse_timestamp("2026-05-15T00:06:31.").is_none());
     }
+
+    #[test]
+    fn every_separator_must_be_in_place() {
+        assert!(parse_timestamp("2026-05-15T00:06:31").is_some());
+        for (i, wrong) in [
+            "2026_05-15T00:06:31",
+            "2026-05_15T00:06:31",
+            "2026-05-15 00:06:31",
+            "2026-05-15T00.06:31",
+            "2026-05-15T00:06.31",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(
+                parse_timestamp(wrong).is_none(),
+                "separator {i} wrong but accepted: {wrong}"
+            );
+        }
+    }
+
+    #[test]
+    fn too_short_to_be_a_timestamp() {
+        assert!(parse_timestamp("2026-05-15T00:06:3").is_none());
+        assert!(parse_timestamp("2026-05-15T00:06:31").is_some());
+    }
+
+    #[test]
+    fn fields_are_read_from_their_own_positions() {
+        let k = parse_timestamp("1987-02-03T04:05:06").unwrap();
+        assert_eq!(
+            (k.year, k.month, k.day, k.hour, k.minute, k.second),
+            (1987, 2, 3, 4, 5, 6)
+        );
+    }
+
+    #[test]
+    fn fractional_digits_scale_to_nanos() {
+        let nanos = |s: &str| parse_timestamp(s).unwrap().nanos;
+        assert_eq!(nanos("2026-05-15T00:06:31.1Z"), 100_000_000);
+        assert_eq!(nanos("2026-05-15T00:06:31.000001Z"), 1_000);
+        assert_eq!(nanos("2026-05-15T00:06:31.123456789"), 123_456_789);
+        // Ten digits is more precision than nanos hold, so no timestamp.
+        assert!(parse_timestamp("2026-05-15T00:06:31.1234567890").is_none());
+    }
+
+    #[test]
+    fn out_of_range_fields_are_rejected() {
+        assert!(parse_timestamp("2026-05-15T00:06:9x").is_none());
+        assert!(parse_timestamp("2026-05-15T00:0-:31").is_none());
+    }
 }
