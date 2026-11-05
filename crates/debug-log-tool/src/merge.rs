@@ -229,7 +229,9 @@ fn merge_day(
 ) -> io::Result<Vec<(String, u64, bool)>> {
     let tmp = output.map(|path| {
         let mut name = OsString::from(path);
-        name.push(".tmp");
+        // Per-process name so two merges into one directory can't scribble
+        // over each other's half-written file.
+        name.push(format!(".{}.tmp", std::process::id()));
         PathBuf::from(name)
     });
     let result = merge_into(inputs, tmp.as_deref(), level, check).and_then(|results| {
