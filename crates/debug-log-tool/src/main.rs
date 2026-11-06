@@ -43,6 +43,12 @@ enum Command {
         #[arg(short = 'j', long, default_value_t = 1)]
         jobs: u32,
 
+        /// Days to merge side by side; 0 uses every core. Days are
+        /// independent, so this scales where --jobs flattens out — but each
+        /// one holds its own compressor, so memory is this times --jobs.
+        #[arg(short = 'D', long, default_value_t = 1)]
+        days: usize,
+
         /// Verify the merge → split round-trip by comparing a content hash of
         /// each input file against a hash of what `split` recovers. With
         /// --output-dir the written log is decompressed and split again
@@ -118,8 +124,9 @@ fn main() -> std::process::ExitCode {
             output_dir,
             level,
             jobs,
+            days,
             check,
-        } => merge::run(&input_dir, output_dir.as_deref(), level, jobs, check)
+        } => merge::run(&input_dir, output_dir.as_deref(), level, jobs, days, check)
             .map_err(|e| eprintln!("merge: {e}")),
         Command::Split { input, output_dir } => {
             split::run(&input, &output_dir).map_err(|e| eprintln!("split: {e}"))

@@ -1870,3 +1870,65 @@ fn jobs_does_not_change_the_merged_content() {
     assert_eq!(merged_at("4"), single, "4 workers changed the content");
     assert_eq!(merged_at("0"), single, "every core changed the content");
 }
+
+/// `--days` only changes how many days are in flight at once: the files have
+/// to come out identical, and every one still has to be checked.
+#[test]
+fn days_does_not_change_the_output() {
+    let dir = test_dir("days_does_not_change_the_output");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    let dates = ["20260515", "20260516", "20260517", "20260518"];
+    for (d, date) in dates.iter().enumerate() {
+        for node in ["node1", "node2"] {
+            let mut content = String::new();
+            for i in 0..500 {
+                content.push_str(&format!(
+                    "2026-05-{}T00:00:{:02}.{i:06}Z [net] {node} line-{i} peer={i}\n",
+                    15 + d,
+                    i % 60
+                ));
+            }
+            write_gz(
+                &inputs.join(format!("debug.log-{date}-{node}.gz")),
+                &content,
+            );
+        }
+    }
+
+    let merged_with = |days: &str| -> Vec<(String, String)> {
+        let out_dir = dir.join(format!("merged-d{days}"));
+        let out = bin()
+            .args(["merge", "--check", "-D", days, "-l", "9", "-o"])
+            .arg(&out_dir)
+            .arg(&inputs)
+            .output()
+            .expect("spawn merge");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("8/8 files round-trip identical"),
+            "every file checked: {stdout}"
+        );
+        dates
+            .iter()
+            .map(|date| {
+                let name = format!("debug.log-{date}.zst");
+                (name.clone(), read_zst(&out_dir.join(name)))
+            })
+            .collect()
+    };
+
+    let one_at_a_time = merged_with("1");
+    assert_eq!(one_at_a_time.len(), 4);
+    for (name, content) in &one_at_a_time {
+        assert_eq!(content.lines().count(), 1_000, "{name}");
+    }
+    assert_eq!(merged_with("3"), one_at_a_time, "3 days at once differed");
+    assert_eq!(merged_with("0"), one_at_a_time, "every core differed");
+}
