@@ -134,7 +134,7 @@ impl<'a> Token<'a> {
 
 /// Flat kind tag mirroring [`Token`] minus `Text`. Used in `Slot::Typed`,
 /// route-key prefixes, and the JSONL persistence format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TokenKind {
     PeerId,
     BlockHeight,

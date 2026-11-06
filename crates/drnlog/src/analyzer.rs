@@ -62,9 +62,10 @@ impl Analyzer {
     }
 
     /// Serialize to JSONL — one `_meta` header line, then one cluster per
-    /// line, sorted by `(category, id)` so the same input always writes the
-    /// same bytes. Use [`save_atomic`](Self::save_atomic) to write a file
-    /// safely (this method is for callers that already own a writer).
+    /// line, in an order that depends only on their contents, so the same
+    /// catalogue always writes the same bytes. Use
+    /// [`save_atomic`](Self::save_atomic) to write a file safely (this
+    /// method is for callers that already own a writer).
     pub fn save<W: Write>(&self, mut w: W) -> io::Result<()> {
         writeln!(
             w,
@@ -74,7 +75,14 @@ impl Analyzer {
             json_float(self.threshold),
         )?;
         let mut clusters: Vec<(Option<&str>, &Cluster)> = self.templates().collect();
-        clusters.sort_by(|(cat_a, a), (cat_b, b)| cat_a.cmp(cat_b).then(a.id.cmp(&b.id)));
+        // Ids are unique per category, but a hand-edited state file can
+        // repeat one; fall back to the template so the order stays total.
+        clusters.sort_by(|(cat_a, a), (cat_b, b)| {
+            cat_a
+                .cmp(cat_b)
+                .then(a.id.cmp(&b.id))
+                .then_with(|| a.template.cmp(&b.template))
+        });
         for (cat, c) in clusters {
             write_cluster_line(&mut w, cat, c)?;
         }
@@ -396,12 +404,30 @@ impl<'a> JsonParser<'a> {
             .map_err(|_| invalid("invalid number"))
     }
 
+    /// Ids and counts are parsed as integers, not via [`parse_number`]: an
+    /// `f64` silently rounds anything past 2^53, and a cluster id has to come
+    /// back exactly as it was written.
+    ///
+    /// [`parse_number`]: Self::parse_number
     fn parse_uint(&mut self) -> io::Result<u64> {
-        let f = self.parse_number()?;
-        if !(f >= 0.0 && f.fract() == 0.0 && f.is_finite()) {
-            return Err(invalid("expected non-negative integer"));
+        self.skip_ws();
+        let bytes = self.src.as_bytes();
+        let start = self.pos;
+        let mut value: u64 = 0;
+        while let Some(&b) = bytes.get(self.pos) {
+            if !b.is_ascii_digit() {
+                break;
+            }
+            value = value
+                .checked_mul(10)
+                .and_then(|v| v.checked_add((b - b'0') as u64))
+                .ok_or_else(|| invalid("integer too large"))?;
+            self.pos += 1;
         }
-        Ok(f as u64)
+        if self.pos == start {
+            return Err(invalid("expected a non-negative integer"));
+        }
+        Ok(value)
     }
 
     fn parse_template(&mut self) -> io::Result<Vec<Slot>> {
@@ -700,6 +726,58 @@ mod tests {
                 load_str(&format!("{HEADER}\n{cluster}\n")).is_err(),
                 "accepted {broken}"
             );
+        }
+    }
+
+    #[test]
+    fn ids_and_counts_survive_exactly() {
+        let fields = |id: &str| {
+            format!(
+                r#"{{"id":{id},"category":null,"count":{id},"first_seen":null,"last_seen":null,"template":[]}}"#
+            )
+        };
+        // Past 2^53 an f64 would round these; both have to come back whole.
+        for exact in ["9007199254740993", "18446744073709551615"] {
+            let state = format!("{HEADER}\n{}\n", fields(exact));
+            let loaded = load_str(&state).unwrap();
+            let (_, cluster) = loaded.templates().next().unwrap();
+            assert_eq!(cluster.id.to_string(), exact);
+            assert_eq!(cluster.count.to_string(), exact);
+            // And saving puts the same digits back.
+            let mut buf = Vec::new();
+            loaded.save(&mut buf).unwrap();
+            assert!(String::from_utf8_lossy(&buf).contains(exact));
+        }
+        // One past u64 is refused rather than wrapped.
+        let state = format!("{HEADER}\n{}\n", fields("18446744073709551616"));
+        let err = load_str(&state).unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn a_repeated_id_still_saves_deterministically() {
+        // Ids are unique when we write them, but a hand-edited file can
+        // repeat one, and the output still has to be reproducible.
+        let cluster = |template: &str| {
+            format!(
+                r#"{{"id":1,"category":"net","count":1,"first_seen":null,"last_seen":null,"template":[{template}]}}"#
+            )
+        };
+        let state = format!(
+            "{HEADER}\n{}\n{}\n{}\n",
+            cluster(r#"{"t":"L","v":"a"}"#),
+            cluster(r#"{"t":"S"}"#),
+            cluster(r#"{"t":"W","k":"PEER"}"#),
+        );
+        let first = {
+            let mut buf = Vec::new();
+            load_str(&state).unwrap().save(&mut buf).unwrap();
+            buf
+        };
+        for _ in 0..8 {
+            let mut buf = Vec::new();
+            load_str(&state).unwrap().save(&mut buf).unwrap();
+            assert_eq!(buf, first, "repeated ids saved in a different order");
         }
     }
 }
