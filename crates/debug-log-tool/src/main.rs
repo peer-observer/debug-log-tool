@@ -49,6 +49,14 @@ enum Command {
         #[arg(short = 'D', long, default_value_t = 1)]
         days: usize,
 
+        /// Only merge days dated before this, e.g. 20251116. The `<date>`
+        /// segment of the filenames is compared as text, which for the
+        /// YYYYMMDD bitcoind uses is a date comparison. A daily job passes
+        /// today, so the day still being written is left alone. Exits
+        /// successfully when nothing is old enough yet.
+        #[arg(long, value_name = "DATE")]
+        before: Option<String>,
+
         /// Verify the merge → split round-trip by comparing a content hash of
         /// each input file against a hash of what `split` recovers. With
         /// --output-dir the written log is decompressed and split again
@@ -125,9 +133,18 @@ fn main() -> std::process::ExitCode {
             level,
             jobs,
             days,
+            before,
             check,
-        } => merge::run(&input_dir, output_dir.as_deref(), level, jobs, days, check)
-            .map_err(|e| eprintln!("merge: {e}")),
+        } => merge::run(
+            &input_dir,
+            output_dir.as_deref(),
+            level,
+            jobs,
+            days,
+            before.as_deref(),
+            check,
+        )
+        .map_err(|e| eprintln!("merge: {e}")),
         Command::Split { input, output_dir } => {
             split::run(&input, &output_dir).map_err(|e| eprintln!("split: {e}"))
         }

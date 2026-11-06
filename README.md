@@ -33,6 +33,9 @@ debug-log-tool merge -o out/ /path/to/logs/
 - `-l, --level <N>` — zstd level, 1 (fastest) to 22 (smallest). Default 19.
 - `-j, --jobs <N>` — compression worker threads; 0 uses every core. Default 1.
 - `-D, --days <N>` — days merged side by side; 0 uses every core. Default 1.
+- `--before <DATE>` — only merge days dated before `DATE` (e.g. `20251116`).
+  A daily job passes today so the day still being written is left alone, and
+  exits successfully when nothing is old enough yet.
 
 ### Making it fast
 
