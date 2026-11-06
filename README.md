@@ -111,3 +111,18 @@ whole log into memory, so they work on logs far larger than RAM.
 `fuzz/` holds libFuzzer targets for the parsers that read bytes nobody
 controls — log lines and state files — plus a corpus test that runs them on the
 pinned toolchain. See [fuzz/README.md](fuzz/README.md).
+
+## Benchmarks
+
+`bench/` holds criterion benchmarks for the per-line work — timestamp parsing,
+line parsing, tokenizing, and clustering — on real bitcoind log lines:
+
+```
+cd bench
+cargo bench                        # all groups
+cargo bench -- --save-baseline before
+cargo bench -- --baseline before   # compare after a change
+```
+
+Like `fuzz/`, it is its own workspace root so criterion stays out of the main
+lockfile and CI's `--all-targets` build.
