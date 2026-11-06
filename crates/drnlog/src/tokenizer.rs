@@ -8,15 +8,17 @@
 //!    classifier wants to fold the whole `peer=1234` slice. `[…]` brackets
 //!    are split too, except an `[ipv6]:port` run, which stays whole even
 //!    after a `key=` prefix.
-//! 2. **Classification** — try a fixed slice of recognizer functions in
-//!    priority order. Each recognizer takes the current atom plus a peek
-//!    at the next atom (for two-atom folds like `42 bytes` → `<BYTES>`).
+//! 2. **Classification** — try the recognizer functions in a fixed
+//!    priority order, skipping those the atom cannot match. Each takes the
+//!    atom plus a peek at the next one (for folds like `42 bytes`).
 //!
 //! Adding a new recognized value type touches three spots in this file:
 //! 1. Add a variant to [`Token`] (and to [`TokenKind`]).
 //! 2. Write `recognize_<thing>` with signature
 //!    `for<'a> fn(&'a str, Option<&'a str>) -> Option<(Token<'a>, usize)>`.
-//! 3. Insert it into [`RECOGNIZERS`] at the right priority.
+//! 3. Call it from [`classify`] at the right priority, behind a cheap
+//!    condition the recognizer itself implies (a first or last byte, a
+//!    length) so the other recognizers can skip it.
 
 use std::mem::discriminant;
 
@@ -288,36 +290,125 @@ fn ipv6_port_prefix_len(s: &str) -> Option<usize> {
 // Pass 2: classification
 // ---------------------------------------------------------------------------
 
-type Classifier = for<'a> fn(&'a str, Option<&'a str>) -> Option<(Token<'a>, usize)>;
-
-const RECOGNIZERS: &[Classifier] = &[
-    recognize_peer_id,
-    recognize_block_height,
-    recognize_byte_count,
-    recognize_hash,
-    recognize_duration,
-    recognize_ipv6_port,
-    recognize_ipv6,
-    recognize_ipv4_port,
-    recognize_ipv4,
-    recognize_onion_port,
-    recognize_onion,
-    recognize_i2p_port,
-    recognize_i2p,
-    recognize_bech32,
-    recognize_hex,
-    recognize_base58,
-    recognize_float,
-    recognize_int,
-];
-
 /// Classify a single atom. The second value is the number of atoms
 /// consumed (typically 1; recognizers like `ByteCount` consume 2).
+///
+/// The recognizers are tried in a fixed priority order, each behind a
+/// condition its own matcher implies — a first or last byte, a length, the
+/// presence of `:` or `.`. A plain word like `received` then costs a couple
+/// of byte tests instead of eighteen failed matches, which is most of what
+/// tokenizing a log line does.
 pub fn classify<'a>(s: &'a str, peek: Option<&'a str>) -> (Token<'a>, usize) {
-    for r in RECOGNIZERS {
-        if let Some((t, n)) = r(s, peek) {
-            return (t, n);
-        }
+    let bytes = s.as_bytes();
+    let (Some(&first), Some(&last)) = (bytes.first(), bytes.last()) else {
+        return (Token::Text(s), 1);
+    };
+    let mut colon = false;
+    let mut dot = false;
+    for &b in bytes {
+        colon |= b == b':';
+        dot |= b == b'.';
+    }
+    let digit = first.is_ascii_digit();
+    let signed = digit || first == b'+' || first == b'-';
+    let len = s.len();
+
+    // `peer=<int>`, `height=<int>`
+    if first == b'p'
+        && let Some(found) = recognize_peer_id(s, peek)
+    {
+        return found;
+    }
+    if first == b'h'
+        && let Some(found) = recognize_block_height(s, peek)
+    {
+        return found;
+    }
+    // `<int> bytes`
+    if digit && let Some(found) = recognize_byte_count(s, peek) {
+        return found;
+    }
+    // Exactly 64 lowercase hex.
+    if len == 64
+        && let Some(found) = recognize_hash(s, peek)
+    {
+        return found;
+    }
+    // Every time unit ends in one of these.
+    if matches!(last, b's' | b'm' | b'h' | b'd')
+        && let Some(found) = recognize_duration(s, peek)
+    {
+        return found;
+    }
+    // Addresses.
+    if first == b'['
+        && let Some(found) = recognize_ipv6_port(s, peek)
+    {
+        return found;
+    }
+    if colon && let Some(found) = recognize_ipv6(s, peek) {
+        return found;
+    }
+    if colon
+        && dot
+        && let Some(found) = recognize_ipv4_port(s, peek)
+    {
+        return found;
+    }
+    if digit
+        && dot
+        && let Some(found) = recognize_ipv4(s, peek)
+    {
+        return found;
+    }
+    if colon
+        && dot
+        && let Some(found) = recognize_onion_port(s, peek)
+    {
+        return found;
+    }
+    if dot
+        && last == b'n'
+        && let Some(found) = recognize_onion(s, peek)
+    {
+        return found;
+    }
+    if colon
+        && dot
+        && let Some(found) = recognize_i2p_port(s, peek)
+    {
+        return found;
+    }
+    if dot
+        && last == b'p'
+        && let Some(found) = recognize_i2p(s, peek)
+    {
+        return found;
+    }
+    if matches!(first, b'b' | b't')
+        && let Some(found) = recognize_bech32(s, peek)
+    {
+        return found;
+    }
+    // `0x…` starts with a hex digit too.
+    if first.is_ascii_hexdigit()
+        && let Some(found) = recognize_hex(s, peek)
+    {
+        return found;
+    }
+    if (26..=35).contains(&len)
+        && let Some(found) = recognize_base58(s, peek)
+    {
+        return found;
+    }
+    if signed
+        && dot
+        && let Some(found) = recognize_float(s, peek)
+    {
+        return found;
+    }
+    if signed && let Some(found) = recognize_int(s, peek) {
+        return found;
     }
     (Token::Text(s), 1)
 }
