@@ -1831,3 +1831,42 @@ fn concurrent_save_state_runs_do_not_corrupt_the_file() {
         );
     }
 }
+
+/// `--jobs` only changes how the compression is divided up: the merged
+/// content has to come back the same, and still round-trip.
+#[test]
+fn jobs_does_not_change_the_merged_content() {
+    let dir = test_dir("jobs_does_not_change_the_merged_content");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    for (node, word) in [("node1", "alpha"), ("node2", "zulu")] {
+        let mut content = String::new();
+        for i in 0..5_000 {
+            content.push_str(&format!(
+                "2026-05-15T00:00:{:02}.{i:06}Z [net] {word}-{i} peer={i}\n",
+                i % 60
+            ));
+        }
+        write_gz(
+            &inputs.join(format!("debug.log-20260515-{node}.gz")),
+            &content,
+        );
+    }
+
+    let merged_at = |jobs: &str| -> String {
+        let out_dir = dir.join(format!("merged-j{jobs}"));
+        run_ok(
+            bin()
+                .args(["merge", "--check", "-j", jobs, "-l", "9", "-o"])
+                .arg(&out_dir)
+                .arg(&inputs),
+            "merge",
+        );
+        read_zst(&out_dir.join("debug.log-20260515.zst"))
+    };
+    let single = merged_at("1");
+    assert_eq!(single.lines().count(), 10_000);
+    assert_eq!(merged_at("4"), single, "4 workers changed the content");
+    assert_eq!(merged_at("0"), single, "every core changed the content");
+}

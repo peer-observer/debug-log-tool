@@ -36,6 +36,13 @@ enum Command {
         #[arg(short = 'l', long, default_value_t = 19)]
         level: i32,
 
+        /// Compression worker threads; 0 uses every core. At the default
+        /// level this is the difference between minutes and seconds on a
+        /// large day. The merged content is the same whatever the count,
+        /// only the compressed framing differs.
+        #[arg(short = 'j', long, default_value_t = 1)]
+        jobs: u32,
+
         /// Verify the merge → split round-trip by comparing a content hash of
         /// each input file against a hash of what `split` recovers. With
         /// --output-dir the written log is decompressed and split again
@@ -110,8 +117,9 @@ fn main() -> std::process::ExitCode {
             input_dir,
             output_dir,
             level,
+            jobs,
             check,
-        } => merge::run(&input_dir, output_dir.as_deref(), level, check)
+        } => merge::run(&input_dir, output_dir.as_deref(), level, jobs, check)
             .map_err(|e| eprintln!("merge: {e}")),
         Command::Split { input, output_dir } => {
             split::run(&input, &output_dir).map_err(|e| eprintln!("split: {e}"))
