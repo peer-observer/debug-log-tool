@@ -27,11 +27,11 @@ pkgs.testers.runNixOSTest {
             script = ''
               # Prove the step saw what was merged, and that it may write to
               # the input directory — where disposing of the originals goes.
-              cp "$MERGED_DAYS" /srv/merged-days.txt
-              wc -l < "$MERGED_DAYS" > /srv/merged-count.txt
+              cp "$MERGED_DAYS" /srv/post/merged-days.txt
+              wc -l < "$MERGED_DAYS" > /srv/post/merged-count.txt
               rm -f "$INPUT_DIR"/.probe
             '';
-            readWritePaths = [ "/srv" ];
+            readWritePaths = [ "/srv/post" ];
           };
         };
 
@@ -51,6 +51,9 @@ pkgs.testers.runNixOSTest {
       systemd.tmpfiles.rules = [
         "d /srv 0755 root root -"
         "d /srv/logs 0750 debug-log-tool debug-log-tool -"
+        # The step runs as debug-log-tool, so it needs a directory it owns:
+        # readWritePaths only lifts the sandbox, it does not grant ownership.
+        "d /srv/post 0750 debug-log-tool debug-log-tool -"
       ];
     };
 
@@ -59,6 +62,15 @@ pkgs.testers.runNixOSTest {
 
     today = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
     old = ["20200101", "20200102"]
+
+    def run_merge():
+        machine.succeed("systemctl start debug-log-tool-merge-logs.target")
+        # Starting the target only waits for the target itself; the units it
+        # pulls in run after it. StopWhenUnneeded stops the target once they
+        # are done, so that is the signal the whole run has finished.
+        machine.wait_until_fails(
+            "systemctl is-active --quiet debug-log-tool-merge-logs.target", timeout=90
+        )
 
     machine.wait_for_unit("multi-user.target")
 
@@ -80,8 +92,7 @@ pkgs.testers.runNixOSTest {
         machine.fail("test -e /srv/merged/debug.log-20200101.zst")
 
     with subtest("merging leaves the current day alone"):
-        machine.succeed("systemctl start debug-log-tool-merge-logs.target")
-        machine.wait_until_succeeds("test -f /srv/merged-count.txt", timeout=90)
+        run_merge()
         for date in old:
             machine.succeed(f"test -s /srv/merged/debug.log-{date}.zst")
         machine.fail(f"test -e /srv/merged/debug.log-{today}.zst")
@@ -97,8 +108,8 @@ pkgs.testers.runNixOSTest {
         )
 
     with subtest("the post-merge step ran once, with the manifest"):
-        assert machine.succeed("cat /srv/merged-count.txt").strip() == "2"
-        manifest = machine.succeed("cat /srv/merged-days.txt")
+        assert machine.succeed("cat /srv/post/merged-count.txt").strip() == "2"
+        manifest = machine.succeed("cat /srv/post/merged-days.txt")
         assert "/srv/merged/debug.log-20200101.zst" in manifest, manifest
         assert "/srv/merged/debug.log-20200102.zst" in manifest, manifest
         # It could write to the input directory.
@@ -107,11 +118,11 @@ pkgs.testers.runNixOSTest {
     with subtest("nothing to merge is a clean no-op, and skips the step"):
         # Only the day still being written is left, so nothing is eligible.
         machine.succeed("rm /srv/logs/debug.log-20200101-*.gz /srv/logs/debug.log-20200102-*.gz")
-        machine.succeed("rm /srv/merged-count.txt")
-        machine.succeed("systemctl start debug-log-tool-merge-logs.target")
+        machine.succeed("rm /srv/post/merged-count.txt")
+        run_merge()
         machine.succeed("journalctl -u debug-log-tool-merge-logs.service | grep -q 'nothing to merge'")
         # ExecCondition saw an empty manifest, so the post-merge step did not run.
-        machine.fail("test -e /srv/merged-count.txt")
+        machine.fail("test -e /srv/post/merged-count.txt")
         # And the tool itself says so rather than failing.
         machine.succeed(
             "debug-log-tool merge --before 20200101 -o /srv/none /srv/logs"
