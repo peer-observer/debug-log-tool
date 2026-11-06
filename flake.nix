@@ -5,23 +5,22 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
-  outputs = { self, nixpkgs }:
+  outputs =
+    { self, nixpkgs }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
-      forAllSystems = f:
-        nixpkgs.lib.genAttrs systems (system:
-          f (import nixpkgs { inherit system; }));
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
 
-      mkPackage = pkgs:
-        pkgs.rustPlatform.buildRustPackage {
-          pname = "debug-log-tool";
-          version = "0.1.0";
-          src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-        };
+      mkPackage = pkgs: pkgs.callPackage ./nix/package.nix { };
     in
     {
-      devShells = forAllSystems (pkgs:
+      devShells = forAllSystems (
+        pkgs:
         let
           # `check` shorthand: runs every `checks.*` derivation in a way that
           # always actually executes them.
@@ -59,48 +58,69 @@
 
             env.RUST_BACKTRACE = "1";
           };
-        });
+        }
+      );
 
-      packages = forAllSystems (pkgs: {
-        default = mkPackage pkgs;
+      packages = forAllSystems (pkgs: rec {
+        debug-log-tool = mkPackage pkgs;
+        default = debug-log-tool;
       });
+
+      # services.debug-log-tool.{merge,templates}.<name>; see nix/module.nix.
+      nixosModules = rec {
+        debug-log-tool = import ./nix/module.nix self;
+        default = debug-log-tool;
+      };
 
       # `nix flake check` builds and runs every derivation below in parallel,
       # giving a single-command local mirror of the cargo-based CI jobs.
-      checks = forAllSystems (pkgs: {
-        # cargo build + cargo test (rustPlatform.buildRustPackage runs tests
-        # in its default checkPhase).
-        build = mkPackage pkgs;
+      checks = forAllSystems (
+        pkgs:
+        {
+          # cargo build + cargo test (rustPlatform.buildRustPackage runs tests
+          # in its default checkPhase).
+          build = mkPackage pkgs;
 
-        # cargo clippy --all-targets -- -D warnings, reusing the vendored
-        # dependency closure produced by the base package derivation.
-        clippy = (mkPackage pkgs).overrideAttrs (old: {
-          pname = "${old.pname}-clippy";
-          nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.clippy ];
-          buildPhase = ''
-            runHook preBuild
-            cargo clippy --all-targets --offline -- -D warnings
-            runHook postBuild
-          '';
-          doCheck = false;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p $out
-            runHook postInstall
-          '';
-        });
+          # cargo clippy --all-targets -- -D warnings, reusing the vendored
+          # dependency closure produced by the base package derivation.
+          clippy = (mkPackage pkgs).overrideAttrs (old: {
+            pname = "${old.pname}-clippy";
+            nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.clippy ];
+            buildPhase = ''
+              runHook preBuild
+              cargo clippy --all-targets --offline -- -D warnings
+              runHook postBuild
+            '';
+            doCheck = false;
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out
+              runHook postInstall
+            '';
+          });
 
-        # cargo fmt --all -- --check. No compilation, so no vendoring needed.
-        fmt = pkgs.runCommand "debug-log-tool-fmt"
-          {
-            nativeBuildInputs = [ pkgs.cargo pkgs.rustfmt ];
-          } ''
-            cp -r ${./.} src
-            chmod -R u+w src
-            cd src
-            cargo fmt --all -- --check
-            touch $out
-          '';
-      });
+          # cargo fmt --all -- --check. No compilation, so no vendoring needed.
+          fmt =
+            pkgs.runCommand "debug-log-tool-fmt"
+              {
+                nativeBuildInputs = [
+                  pkgs.cargo
+                  pkgs.rustfmt
+                ];
+              }
+              ''
+                cp -r ${./.} src
+                chmod -R u+w src
+                cd src
+                cargo fmt --all -- --check
+                touch $out
+              '';
+        }
+        # NixOS module test: needs a VM, so Linux only. Not part of the
+        # `check` dev-shell shorthand, which stays quick.
+        // nixpkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          module = import ./nix/test.nix { inherit self pkgs; };
+        }
+      );
     };
 }

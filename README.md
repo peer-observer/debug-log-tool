@@ -167,3 +167,49 @@ cargo bench -- --baseline before   # compare after a change
 
 Like `fuzz/`, it is its own workspace root so criterion stays out of the main
 lockfile and CI's `--all-targets` build.
+
+## NixOS module
+
+The flake exports `nixosModules.default`, with timed `merge` and `templates`
+jobs. Each `merge` instance is a timer that starts a target: the merge runs,
+and then each `postMerge` step in turn. A merge that fails — or whose
+`--check` finds a mismatch — publishes nothing, and its post-merge steps do
+not run.
+
+```nix
+services.debug-log-tool = {
+  merge.peerobserver = {
+    inputDir = "/var/lib/peer-observer/archiver";
+    outputDir = "/data/merged";
+    supplementaryGroups = [ "peer-observer" ];   # to read inputDir
+    # jobs = 8; days = 1; level = 19; check = true; onCalendar = "daily";
+
+    postMerge.prune.script = ''
+      # $MERGED_DAYS lists the .zst written this run, one path per line.
+      while read -r merged; do
+        date=$(basename "$merged" .zst); date=''${date#debug.log-}
+        rm -v "$INPUT_DIR"/debug.log-"$date"-*.gz
+      done < "$MERGED_DAYS"
+    '';
+  };
+
+  templates.catalogue = {
+    inputs = [ "/data/merged" ];
+    statePath = "/var/lib/debug-log-tool/catalogue.jsonl";
+    reportPath = "/data/reports/catalogue.json";
+  };
+};
+```
+
+`skipCurrentDay` (on by default) passes today to `--before`, so the day still
+being written is left alone. Disposing of the merged inputs is deliberately
+left to a `postMerge` step — the module never deletes logs. Steps run in
+attribute-name order, each as its own hardened unit, and are skipped when
+nothing was merged.
+
+A `templates` instance accumulates one catalogue when `statePath` is set (each
+log folded in once, `reportPath` rendered from the state) and writes one
+report per log into `reportDir` when it isn't.
+
+`nix flake check` includes a NixOS VM test of all of this on Linux; the
+`check` dev-shell shorthand stays limited to build, clippy and fmt.
