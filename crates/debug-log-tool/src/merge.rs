@@ -153,6 +153,7 @@ pub fn run(
     level: i32,
     jobs: u32,
     days: usize,
+    before: Option<&str>,
     check: bool,
 ) -> io::Result<()> {
     let inputs = discover_inputs(input_dir)?;
@@ -178,6 +179,17 @@ pub fn run(
     let mut by_date: BTreeMap<String, Vec<MergeInput>> = BTreeMap::new();
     for input in inputs {
         by_date.entry(input.date.clone()).or_default().push(input);
+    }
+
+    // The `<date>` segment is fixed-width, so comparing it as text is
+    // comparing dates. A daily run passes today and leaves the day still
+    // being written alone.
+    if let Some(before) = before {
+        by_date.retain(|date, _| date.as_str() < before);
+        if by_date.is_empty() {
+            println!("merge: nothing dated before {before}");
+            return Ok(());
+        }
     }
 
     if let Some(dir) = output_dir {

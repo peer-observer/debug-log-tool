@@ -1932,3 +1932,83 @@ fn days_does_not_change_the_output() {
     assert_eq!(merged_with("3"), one_at_a_time, "3 days at once differed");
     assert_eq!(merged_with("0"), one_at_a_time, "every core differed");
 }
+
+/// `--before` leaves the day that is still being written alone, which is what
+/// a daily job needs, and says so rather than failing when nothing is old
+/// enough yet.
+#[test]
+fn before_only_merges_older_days() {
+    let dir = test_dir("before_only_merges_older_days");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    for date in ["20260514", "20260515", "20260516"] {
+        write_gz(
+            &inputs.join(format!("debug.log-{date}-node1.gz")),
+            &format!("2026-05-{}T00:00:01 line-for-{date}\n", &date[6..]),
+        );
+    }
+
+    let merged_dir = dir.join("merged");
+    let out = bin()
+        .args(["merge", "--check", "--before", "20260516", "-o"])
+        .arg(&merged_dir)
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("2/2 files round-trip identical"),
+        "{stdout}"
+    );
+
+    let mut merged: Vec<String> = std::fs::read_dir(&merged_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    merged.sort();
+    assert_eq!(
+        merged,
+        vec!["debug.log-20260514.zst", "debug.log-20260515.zst"],
+        "the 16th should have been left alone",
+    );
+
+    // Nothing old enough is not a failure: a daily job would otherwise fail
+    // every night until the first day rolls over.
+    let out = bin()
+        .args(["merge", "--before", "20260101", "-o"])
+        .arg(dir.join("merged-none"))
+        .arg(&inputs)
+        .output()
+        .expect("spawn merge");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("nothing dated before 20260101"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        !dir.join("merged-none").exists(),
+        "nothing should be created"
+    );
+
+    // An input directory with no logs at all is still an error.
+    let empty = dir.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = bin()
+        .args(["merge", "--before", "20260516", "-o"])
+        .arg(dir.join("merged-empty"))
+        .arg(&empty)
+        .output()
+        .expect("spawn merge");
+    assert!(!out.status.success());
+}
