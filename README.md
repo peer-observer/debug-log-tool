@@ -31,6 +31,22 @@ debug-log-tool merge -o out/ /path/to/logs/
 
 - `-o, --output-dir <DIR>` — where the per-day `.zst` files are written.
 - `-l, --level <N>` — zstd level, 1 (fastest) to 22 (smallest). Default 19.
+- `-j, --jobs <N>` — compression worker threads; 0 uses every core. Default 1.
+
+Compression is almost all of a merge's wall time at the default level, so
+`--jobs` is the knob that matters. On 2.1M real lines (257 MB) across three
+nodes, 24 cores available:
+
+| | `-j 1` | `-j 4` | `-j 8` |
+| --- | --- | --- | --- |
+| time | 66.2s | 22.1s | 12.4s |
+| output | 13.690 MB | 13.698 MB | 13.698 MB |
+
+The merged content is identical at any job count; only the compressed framing
+differs. For reference, the same input at `-j 1` by level: 0.6s at 1, 1.7s at
+9, 6.4s at 15, 30.2s at 18, 66.2s at 19 — level 19 buys 10% over 18 for
+twice the time, so if you want it cheaply, use `--jobs` rather than a lower
+level.
 
 #### `--check` — verify the round-trip
 
