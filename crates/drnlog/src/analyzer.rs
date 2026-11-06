@@ -401,9 +401,15 @@ impl<'a> JsonParser<'a> {
         if self.pos == start {
             return Err(invalid("expected number"));
         }
-        self.src[start..self.pos]
+        let value = self.src[start..self.pos]
             .parse::<f64>()
-            .map_err(|_| invalid("invalid number"))
+            .map_err(|_| invalid("invalid number"))?;
+        // Out-of-range exponents parse to infinity, which JSON cannot spell,
+        // so such a state file could be read but never written back.
+        if !value.is_finite() {
+            return Err(invalid("number out of range"));
+        }
+        Ok(value)
     }
 
     /// Ids and counts are parsed as integers, not via [`parse_number`]: an
@@ -649,6 +655,9 @@ mod tests {
             r#"{"meta":{"version":1,"depth":4,"threshold":0.5}}"#,
             r#"{"_meta":{"version":1,"depth":-4,"threshold":0.5}}"#,
             r#"{"_meta":{"version":1,"depth":4,"threshold":x}}"#,
+            // Overflows to infinity, which cannot be written back as JSON.
+            r#"{"_meta":{"version":1,"depth":4,"threshold":1e400}}"#,
+            r#"{"_meta":{"version":1,"depth":4,"threshold":-1e400}}"#,
         ] {
             assert!(load_str(bad).is_err(), "accepted {bad:?}");
         }
