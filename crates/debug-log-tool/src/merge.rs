@@ -16,6 +16,7 @@ use std::fs::File;
 use std::hash::Hasher;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use flate2::read::MultiGzDecoder;
 
@@ -151,6 +152,7 @@ pub fn run(
     output_dir: Option<&Path>,
     level: i32,
     jobs: u32,
+    days: usize,
     check: bool,
 ) -> io::Result<()> {
     let inputs = discover_inputs(input_dir)?;
@@ -190,21 +192,28 @@ pub fn run(
         println!("merge --check: {scope}");
     }
 
-    let mut total = 0usize;
-    let mut ok_count = 0usize;
-    for (date, group) in by_date {
-        let output = output_dir.map(|dir| dir.join(format!("{FILE_PREFIX}{date}.zst")));
-        for (node, lines, ok) in merge_day(group, output.as_deref(), level, jobs, check)? {
-            total += 1;
-            if ok {
-                ok_count += 1;
-            }
-            let status = if ok { "OK  " } else { "FAIL" };
-            println!("  {date}  {node:<14} {status}  {lines} lines");
-        }
+    let at_once = match days {
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+        n => n,
     }
+    .clamp(1, by_date.len());
+
+    let reports = if at_once == 1 {
+        // One day at a time, reported as it goes.
+        let mut reports = Vec::with_capacity(by_date.len());
+        for (date, group) in by_date {
+            let report = merge_one_day(&date, group, output_dir, level, jobs, check)?;
+            print!("{}", report.lines);
+            reports.push(report);
+        }
+        reports
+    } else {
+        merge_days_concurrently(by_date, output_dir, level, jobs, check, at_once)?
+    };
 
     if check {
+        let total = reports.iter().map(|r| r.total).sum::<usize>();
+        let ok_count = reports.iter().map(|r| r.ok).sum::<usize>();
         println!("check: {ok_count}/{total} files round-trip identical");
         if ok_count != total {
             return Err(io::Error::new(
@@ -214,6 +223,92 @@ pub fn run(
         }
     }
     Ok(())
+}
+
+/// What one day's merge produced, with its report held as text so a
+/// concurrent run can print whole blocks rather than interleaved lines.
+struct DayReport {
+    lines: String,
+    ok: usize,
+    total: usize,
+}
+
+fn merge_one_day(
+    date: &str,
+    group: Vec<MergeInput>,
+    output_dir: Option<&Path>,
+    level: i32,
+    jobs: u32,
+    check: bool,
+) -> io::Result<DayReport> {
+    let output = output_dir.map(|dir| dir.join(format!("{FILE_PREFIX}{date}.zst")));
+    let mut report = DayReport {
+        lines: String::new(),
+        ok: 0,
+        total: 0,
+    };
+    for (node, lines, ok) in merge_day(group, output.as_deref(), level, jobs, check)? {
+        report.total += 1;
+        if ok {
+            report.ok += 1;
+        }
+        let status = if ok { "OK  " } else { "FAIL" };
+        report
+            .lines
+            .push_str(&format!("  {date}  {node:<14} {status}  {lines} lines\n"));
+    }
+    Ok(report)
+}
+
+/// Merge `at_once` days side by side. Days are independent — separate inputs,
+/// separate output files — and scale much better than adding compression
+/// workers to one day, where zstd has to emit jobs in order.
+fn merge_days_concurrently(
+    by_date: BTreeMap<String, Vec<MergeInput>>,
+    output_dir: Option<&Path>,
+    level: i32,
+    jobs: u32,
+    check: bool,
+    at_once: usize,
+) -> io::Result<Vec<DayReport>> {
+    let pending = Mutex::new(by_date.into_iter().collect::<Vec<_>>().into_iter());
+    let done: Mutex<Vec<DayReport>> = Mutex::new(Vec::new());
+    let failure: Mutex<Option<io::Error>> = Mutex::new(None);
+
+    std::thread::scope(|scope| {
+        for _ in 0..at_once {
+            scope.spawn(|| {
+                loop {
+                    // Stop handing out days once one has failed.
+                    if failure.lock().expect("lock").is_some() {
+                        return;
+                    }
+                    let Some((date, group)) = pending.lock().expect("lock").next() else {
+                        return;
+                    };
+                    match merge_one_day(&date, group, output_dir, level, jobs, check) {
+                        Ok(report) => {
+                            // A whole day at a time, so the block stays intact.
+                            print!("{}", report.lines);
+                            done.lock().expect("lock").push(report);
+                        }
+                        Err(e) => {
+                            let mut failure = failure.lock().expect("lock");
+                            if failure.is_none() {
+                                *failure = Some(e);
+                            }
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    match failure.into_inner().expect("lock") {
+        Some(e) => Err(e),
+        None => Ok(done.into_inner().expect("lock")),
+    }
 }
 
 /// Streaming k-way merge of one day's inputs, writing the interleaved,
