@@ -1757,3 +1757,77 @@ fn extreme_timestamps_round_trip() {
         ]
     );
 }
+
+/// Two runs saving different catalogues to one state file must not interleave
+/// into each other's temp file: whichever lands last, the file has to be a
+/// whole catalogue that loads.
+#[test]
+fn concurrent_save_state_runs_do_not_corrupt_the_file() {
+    let dir = test_dir("concurrent_save_state_runs_do_not_corrupt_the_file");
+
+    // Two inputs with no templates in common, each big enough that the two
+    // saves overlap in time.
+    let mut fixtures = Vec::new();
+    for (name, word) in [("first", "alpha"), ("second", "zulu")] {
+        let path = dir.join(format!("{name}.log"));
+        let mut content = String::new();
+        for i in 0..4_000 {
+            content.push_str(&format!(
+                "2026-05-15T00:00:{:02} [net] {word}-{i} one two three four five\n",
+                i % 60
+            ));
+        }
+        std::fs::write(&path, &content).unwrap();
+        // What that input alone produces, to compare against.
+        let expected = dir.join(format!("{name}.jsonl"));
+        run_ok(
+            bin()
+                .args(["templates", "--save-state"])
+                .arg(&expected)
+                .arg(&path),
+            "templates",
+        );
+        fixtures.push((path, std::fs::read(&expected).unwrap()));
+    }
+
+    let shared = dir.join("shared.jsonl");
+    for round in 0..5 {
+        let _ = std::fs::remove_file(&shared);
+        let mut children: Vec<_> = fixtures
+            .iter()
+            .map(|(input, _)| {
+                bin()
+                    .args(["templates", "--save-state"])
+                    .arg(&shared)
+                    .arg(input)
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .expect("spawn templates")
+            })
+            .collect();
+        for child in &mut children {
+            assert!(child.wait().unwrap().success(), "round {round}");
+        }
+
+        let written = std::fs::read(&shared).unwrap();
+        assert!(
+            fixtures.iter().any(|(_, expected)| expected == &written),
+            "round {round}: state file is neither run's output ({} bytes)",
+            written.len(),
+        );
+        // And it is still loadable.
+        run_ok(
+            bin().args(["templates", "--load-state"]).arg(&shared),
+            "templates --load-state",
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+    }
+}

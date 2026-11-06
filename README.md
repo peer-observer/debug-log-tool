@@ -36,10 +36,15 @@ debug-log-tool merge -o out/ /path/to/logs/
 
 `--check` verifies that every input file round-trips through `merge` → `split`
 byte-for-byte. It hashes each input file's decompressed content as it is read,
-runs the merged stream back through the real `split` parser, and compares that
-against a hash of what `split` reconstructs for each node. It reports one line
-per input file plus a summary, and exits non-zero if anything fails to
-round-trip.
+then — with `--output-dir` — decompresses the merged log it just wrote, runs it
+back through the real `split` parser, and compares what that recovers per node.
+The log is only renamed into place once it passes, so a mismatch publishes
+nothing. It reports one line per input file plus a summary, and exits non-zero
+if anything fails to round-trip.
+
+With no `--output-dir` there is no file to read back, so the check digests the
+merged stream as it is assembled instead. That still covers the merge and split
+logic, but not the writing itself.
 
 Verify only, writing nothing (`--output-dir` is optional here):
 
@@ -54,11 +59,12 @@ large batch of logs and wanting assurance before deleting the originals:
 debug-log-tool merge --check -o out/ /path/to/logs/
 ```
 
-Because the decompression is shared, verifying alongside a write adds only the
-hashing and re-parsing cost on top of a normal merge. Example output:
+Reading the output back costs a decompression pass, which disappears next to
+the compression a merge is already doing: on 600k real lines at level 19,
+18.8s with `--check` against 18.6s without. Example output:
 
 ```
-merge --check: verifying merge → split round-trip (writing output too)
+merge --check: writing each day, then re-reading it and splitting it back
   20251115  alice          OK    39090878 lines
   20251115  bob            OK    33594449 lines
   ...
@@ -99,3 +105,9 @@ debug-log-tool templates out/debug.log-20251115.zst
 Both `merge` and `split` stream: `merge` is a k-way merge holding at most one
 pending line per input, and `split` dispatches line by line. Neither loads a
 whole log into memory, so they work on logs far larger than RAM.
+
+## Fuzzing
+
+`fuzz/` holds libFuzzer targets for the parsers that read bytes nobody
+controls — log lines and state files — plus a corpus test that runs them on the
+pinned toolchain. See [fuzz/README.md](fuzz/README.md).

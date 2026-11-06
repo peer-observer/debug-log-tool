@@ -1,0 +1,59 @@
+[package]
+name = "drnlog-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace root: the fuzz targets pull in libfuzzer-sys, which has no
+# business in the main workspace's lockfile.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+drnlog = { path = "../crates/drnlog" }
+libfuzzer-sys = "0.4"
+
+[profile.release]
+debug = 1
+debug-assertions = true
+overflow-checks = true
+
+# Fuzz targets, run by `cargo fuzz` on a nightly toolchain. The corpus test
+# in `tests/` exercises the same checks on the pinned stable one.
+[[bin]]
+name = "timestamp"
+path = "fuzz_targets/timestamp.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "line_parse"
+path = "fuzz_targets/line_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "tokenize"
+path = "fuzz_targets/tokenize.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ingest_line"
+path = "fuzz_targets/ingest_line.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "state_load"
+path = "fuzz_targets/state_load.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "state_round_trip"
+path = "fuzz_targets/state_round_trip.rs"
+test = false
+doc = false

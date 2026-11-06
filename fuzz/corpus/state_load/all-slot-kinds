@@ -1,0 +1,2 @@
+{"_meta":{"version":1,"depth":4,"threshold":0.5}}
+{"id":1,"category":null,"count":1,"first_seen":null,"last_seen":null,"template":[{"t":"S"},{"t":"W","k":"PEER"},{"t":"L","v":"a\"b\\c\td"}]}

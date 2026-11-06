@@ -1,0 +1,40 @@
+2025-11-15T00:00:35.988933Z [msghand] [net] received: tx (312 bytes) peer=9
+2025-11-15T00:00:36.190781Z [msghand] [validation] Enqueuing TransactionAddedToMempool: txid=e58383544f3494d359fa6c79f7367216eb3c45717c59ec28f9e46098895b89a2 wtxid=efc1b11648ecc949f71c4c42bb02253d49934ae1a6ccd3747ec9ce0d0e90a9d6
+2025-11-15T00:00:36.190886Z [msghand] [mempool] AcceptToMemoryPool: peer=9: accepted e58383544f3494d359fa6c79f7367216eb3c45717c59ec28f9e46098895b89a2 (wtxid=efc1b11648ecc949f71c4c42bb02253d49934ae1a6ccd3747ec9ce0d0e90a9d6) (poolsz 49874 txn, 154979 kB)
+2025-11-15T00:00:36.191394Z [scheduler] [validation] TransactionAddedToMempool: txid=e58383544f3494d359fa6c79f7367216eb3c45717c59ec28f9e46098895b89a2 wtxid=efc1b11648ecc949f71c4c42bb02253d49934ae1a6ccd3747ec9ce0d0e90a9d6
+2025-11-15T00:00:36.192751Z [msghand] [net] received: inv (37 bytes) peer=406247
+2025-11-15T00:00:36.192817Z [msghand] [net] got inv: wtx 6582bc540eae31af0544e68e8407a585048ada4d1330c863e378b3b9892b52b1  new peer=406247
+2025-11-15T00:00:36.192888Z [msghand] [net] received: getdata (73 bytes) peer=47742
+2025-11-15T00:00:36.192908Z [msghand] [net] received getdata (2 invsz) peer=47742
+2025-11-15T00:00:36.192918Z [msghand] [net] received getdata for: witness-tx 5672c461d2110513ed7caf073a93d0b89dcd6b9f0d2d621a320b4693375f6605 peer=47742
+2025-11-15T00:00:36.192938Z [msghand] [net] sending tx (687 bytes) peer=47742
+2025-11-15T00:00:36.193034Z [msghand] [net] sending tx (188 bytes) peer=47742
+2025-11-15T00:00:36.193136Z [msghand] [net] received: inv (73 bytes) peer=111487
+2025-11-15T00:00:36.193185Z [msghand] [net] got inv: wtx 756f42d4f3f1af8e3c755e042cc54a594ee0be803082438e13f146cd73f02e49  new peer=111487
+2025-11-15T00:00:36.193206Z [msghand] [net] got inv: wtx 358e747bcb7a3b587f55090864336867850c2075c7008f3834ddbe421559bd48  new peer=111487
+2025-11-15T00:00:36.194388Z [msghand] [net] received: inv (37 bytes) peer=18
+2025-11-15T00:00:36.194447Z [msghand] [net] got inv: wtx efc1b11648ecc949f71c4c42bb02253d49934ae1a6ccd3747ec9ce0d0e90a9d6  have peer=18
+2025-11-15T00:00:36.194936Z [msghand] [net] received: inv (73 bytes) peer=106574
+2025-11-15T00:00:36.194990Z [msghand] [net] got inv: wtx 756f42d4f3f1af8e3c755e042cc54a594ee0be803082438e13f146cd73f02e49  new peer=106574
+2025-11-15T00:00:36.195012Z [msghand] [net] got inv: wtx efc1b11648ecc949f71c4c42bb02253d49934ae1a6ccd3747ec9ce0d0e90a9d6  have peer=106574
+2025-11-15T00:00:36.195033Z [msghand] [net] Requesting wtx 756f42d4f3f1af8e3c755e042cc54a594ee0be803082438e13f146cd73f02e49 peer=106574
+2025-11-15T00:00:36.195046Z [msghand] [net] sending getdata (37 bytes) peer=106574
+2025-11-15T00:00:36.195348Z [msghand] [net] received: getheaders (69 bytes) peer=910971
+2025-11-15T00:00:36.195366Z [msghand] [net] getheaders -1 to end from peer=910971
+2025-11-15T00:00:36.195372Z [msghand] [net] sending headers (1 bytes) peer=910971
+2025-11-15T00:00:36.195816Z [msghand] [net] received: getdata (253 bytes) peer=777306
+2025-11-15T00:00:36.195835Z [msghand] [net] received getdata (7 invsz) peer=777306
+2025-11-15T00:00:36.195846Z [msghand] [net] received getdata for: wtx 765578fb04a3cc4c82d84d8f429b057af59f50d29a9346e969e1836d0914e9c0 peer=777306
+2025-11-15T00:00:36.195872Z [msghand] [net] sending tx (487 bytes) peer=777306
+2025-11-15T00:00:36.195973Z [msghand] [net] sending tx (234 bytes) peer=777306
+2025-11-15T00:00:36.196043Z [msghand] [net] sending tx (366 bytes) peer=777306
+2025-11-15T00:00:36.196095Z [msghand] [net] sending tx (366 bytes) peer=777306
+2025-11-15T00:00:36.196139Z [msghand] [net] sending tx (366 bytes) peer=777306
+2025-11-15T00:00:36.196496Z [msghand] [net] sending tx (366 bytes) peer=777306
+2025-11-15T00:00:36.196576Z [msghand] [net] sending tx (383 bytes) peer=777306
+2025-11-15T00:00:36.196703Z [msghand] [net] received: getdata (361 bytes) peer=953568
+2025-11-15T00:00:36.196716Z [msghand] [net] received getdata (10 invsz) peer=953568
+2025-11-15T00:00:36.196726Z [msghand] [net] received getdata for: witness-tx 5672c461d2110513ed7caf073a93d0b89dcd6b9f0d2d621a320b4693375f6605 peer=953568
+2025-11-15T00:00:36.196752Z [msghand] [net] sending tx (687 bytes) peer=953568
+2025-11-15T00:00:36.196866Z [msghand] [net] sending tx (234 bytes) peer=953568
+2025-11-15T00:00:36.196941Z [msghand] [net] sending tx (366 bytes) peer=953568
