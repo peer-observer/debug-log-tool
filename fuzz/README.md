@@ -58,3 +58,5 @@ artifact in `corpus/` is checked on every run.
   a panic with overflow checks on, a wrap to colliding ids without.
 - The JSONL reader parsed ids and counts through an `f64`, silently rounding
   anything past 2^53.
+- A `threshold` with an out-of-range exponent parsed to infinity, which JSON
+  cannot spell: the state file loaded once and could never be read again.
