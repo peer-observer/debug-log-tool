@@ -32,21 +32,43 @@ debug-log-tool merge -o out/ /path/to/logs/
 - `-o, --output-dir <DIR>` — where the per-day `.zst` files are written.
 - `-l, --level <N>` — zstd level, 1 (fastest) to 22 (smallest). Default 19.
 - `-j, --jobs <N>` — compression worker threads; 0 uses every core. Default 1.
+- `-D, --days <N>` — days merged side by side; 0 uses every core. Default 1.
 
-Compression is almost all of a merge's wall time at the default level, so
-`--jobs` is the knob that matters. On 2.1M real lines (257 MB) across three
-nodes, 24 cores available:
+### Making it fast
 
-| | `-j 1` | `-j 4` | `-j 8` |
-| --- | --- | --- | --- |
-| time | 66.2s | 22.1s | 12.4s |
-| output | 13.690 MB | 13.698 MB | 13.698 MB |
+Compression is almost all of a merge's wall time at the default level —
+everything else (gzip inflate, the k-way merge, writing) is 0.6s of a 66s run
+on 2.1M lines. So the question is only how much compression parallelism you
+can get.
 
-The merged content is identical at any job count; only the compressed framing
-differs. For reference, the same input at `-j 1` by level: 0.6s at 1, 1.7s at
-9, 6.4s at 15, 30.2s at 18, 66.2s at 19 — level 19 buys 10% over 18 for
-twice the time, so if you want it cheaply, use `--jobs` rather than a lower
-level.
+`--jobs` is the first answer, on 2.1M real lines (257 MB, three nodes, 24
+cores available):
+
+| | `-j 1` | `-j 4` | `-j 8` | `-j 24` |
+| --- | --- | --- | --- | --- |
+| time | 66.2s | 22.1s | 12.4s | 12.5s |
+| output | 13.690 MB | 13.698 MB | 13.698 MB | 13.698 MB |
+
+It does not scale linearly and flattens out: zstd's workers have to emit their
+jobs in input order, and each job is around twice the window size (8 MiB at
+level 19), so a 257 MB day only has a dozen or so jobs to spread over. A
+bigger day has more: at 1 GB, `-j 8` takes 44.7s, `-j 24` 28.8s.
+
+`--days` scales where `--jobs` flattens, because days share nothing — separate
+inputs, separate output files. Three 257 MB days:
+
+| | `-D 1` | `-D 3` |
+| --- | --- | --- |
+| time | 36.8s | 18.3s |
+
+Peak memory is the real constraint past that, not cores: on a 1 GB day it is
+1.0 GB at `-j 8` and 2.9 GB at `-j 24`, and `--days` multiplies it.
+
+Level is the knob not to reach for: at `-j 1` the same input takes 0.6s at
+level 1, 1.7s at 9, 6.4s at 15, 30.2s at 18 and 66.2s at 19. Level 19 costs
+twice level 18 for 10% smaller output, but `--jobs` buys that back without
+giving up any ratio — the merged content is identical at any job or day count,
+and only the compressed framing differs.
 
 #### `--check` — verify the round-trip
 
