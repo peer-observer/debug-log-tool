@@ -34,6 +34,9 @@ Naming `local/<target>` first keeps the inputs the fuzzer discovers out of the
 curated seed corpus; `local/` is gitignored. Drop a crash artifact into
 `corpus/<target>/` to turn it into a regression check.
 
+Inside the dev shell, the libFuzzer link step needs rustup on PATH as well,
+for the linker shim the nightly toolchain was installed with.
+
 ## Without a nightly toolchain
 
 `tests/corpus.rs` runs the same targets over the corpus on the pinned stable
