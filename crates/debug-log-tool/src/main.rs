@@ -37,10 +37,11 @@ enum Command {
         level: i32,
 
         /// Verify the merge → split round-trip by comparing a content hash of
-        /// each input file against a hash of what `split` reconstructs. Exits
-        /// non-zero if any file fails to round-trip. Combine with --output-dir
-        /// to write the merged output and verify it in the same pass; on its
-        /// own it verifies without writing anything.
+        /// each input file against a hash of what `split` recovers. With
+        /// --output-dir the written log is decompressed and split again
+        /// before it is published, so a mismatch leaves the log unpublished;
+        /// on its own the check reads nothing back and writes nothing. Exits
+        /// non-zero if any file fails to round-trip.
         #[arg(long)]
         check: bool,
     },
