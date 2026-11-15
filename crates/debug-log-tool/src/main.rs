@@ -121,6 +121,11 @@ enum Command {
         /// Emit one cluster per line as JSON instead of grouped text.
         #[arg(long)]
         json: bool,
+
+        /// Cluster each `<node>` of a merged log separately, writing
+        /// one `<DIR>/<node>.{json,txt}` report per node.
+        #[arg(long = "per-node", value_name = "DIR")]
+        per_node: Option<PathBuf>,
     },
 }
 
@@ -158,6 +163,7 @@ fn main() -> std::process::ExitCode {
             load_state,
             save_state,
             json,
+            per_node,
         } => templates::run(
             input.as_deref(),
             templates::TemplatesOpts {
@@ -169,6 +175,7 @@ fn main() -> std::process::ExitCode {
                 load_state,
                 save_state,
                 json,
+                per_node,
             },
         )
         .map_err(|e| eprintln!("templates: {e}")),

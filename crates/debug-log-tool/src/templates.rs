@@ -24,9 +24,15 @@ pub struct TemplatesOpts {
     pub load_state: Option<PathBuf>,
     pub save_state: Option<PathBuf>,
     pub json: bool,
+    /// Keep one analyzer per `<node>` (merged input only) and write one
+    /// `<dir>/<node>.{json,txt}` report per node.
+    pub per_node: Option<PathBuf>,
 }
 
 pub fn run(input: Option<&Path>, opts: TemplatesOpts) -> io::Result<()> {
+    if let Some(dir) = &opts.per_node {
+        return run_per_node(input, dir, &opts);
+    }
     let mut analyzer = match &opts.load_state {
         Some(path) => {
             let f = File::open(path)?;
@@ -68,6 +74,77 @@ pub fn run(input: Option<&Path>, opts: TemplatesOpts) -> io::Result<()> {
     let stdout = io::stdout();
     let mut w = stdout.lock();
     render(&analyzer, &opts, &mut w)
+}
+
+/// Cluster each node of a merged log on its own, one report per node.
+fn run_per_node(input: Option<&Path>, dir: &Path, opts: &TemplatesOpts) -> io::Result<()> {
+    let bad = |m: String| io::Error::new(io::ErrorKind::InvalidInput, m);
+    if opts.load_state.is_some() || opts.save_state.is_some() {
+        return Err(bad(
+            "--per-node can't be combined with --load-state/--save-state".into(),
+        ));
+    }
+    let path = input.ok_or_else(|| bad("--per-node needs an INPUT".into()))?;
+    let mut reader = open_input(path)?;
+
+    // Every line of a merged log carries the `<node> ` prefix; refuse a
+    // per-node log once its first timestamped line shows it has none.
+    let mut prefixed: Option<bool> = None;
+    let mut analyzers: BTreeMap<String, Analyzer> = BTreeMap::new();
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            break;
+        }
+        let decoded = String::from_utf8_lossy(&buf);
+        let line = decoded.trim_end_matches(['\r', '\n']);
+        if prefixed.is_none() {
+            prefixed = sniff_node_prefix(line);
+            if prefixed == Some(false) {
+                return Err(bad(
+                    "--per-node needs a merged log (lines prefixed with <node>)".into(),
+                ));
+            }
+        }
+        let (node, content) = match line.split_once(' ') {
+            // An empty node name still means the prefix was there.
+            Some(("", rest)) => (UNKNOWN_NODE, rest),
+            Some((node, rest)) => (node, rest),
+            None => (UNKNOWN_NODE, line),
+        };
+        if !is_plain_filename(node) {
+            return Err(bad(format!("node name is not a filename: {node}")));
+        }
+        // Allocating the key only for a node not seen yet keeps the hot path
+        // free of a per-line allocation.
+        if !analyzers.contains_key(node) {
+            analyzers.insert(node.to_owned(), Analyzer::new(opts.depth, opts.threshold));
+        }
+        let a = analyzers.get_mut(node).expect("just inserted");
+        a.ingest_line(content);
+    }
+
+    std::fs::create_dir_all(dir)?;
+    let ext = if opts.json { "json" } else { "txt" };
+    for (node, a) in &analyzers {
+        let out = dir.join(format!("{node}.{ext}"));
+        let tmp = dir.join(format!(".{node}.{ext}.tmp"));
+        let mut w = io::BufWriter::new(File::create(&tmp)?);
+        render(a, opts, &mut w)?;
+        w.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        std::fs::rename(&tmp, &out)?;
+    }
+    Ok(())
+}
+
+/// Where a line with no `<node> ` prefix at all is counted.
+const UNKNOWN_NODE: &str = "_unknown";
+
+/// A node name becomes a filename, so it must not reach outside the
+/// directory or collide with the temp files written there.
+fn is_plain_filename(node: &str) -> bool {
+    !node.starts_with('.') && !node.contains('/')
 }
 
 /// Open `path`, transparently decompressing zstd or gzip.

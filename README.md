@@ -136,6 +136,8 @@ debug-log-tool templates out/debug.log-20251115.zst
 ```
 
 - `--json` — emit one cluster per line as NDJSON.
+- `--per-node <DIR>` — for a merged log, cluster each `<node>` on its own and
+  write one `<DIR>/<node>.{json,txt}` report per node instead of to stdout.
 - `--load-state` / `--save-state <FILE>` — accumulate a catalogue across runs
   (atomic JSONL persistence).
 - `--category <CAT>` (repeatable), `--top <N>`, `--min-count <N>` — filter and
