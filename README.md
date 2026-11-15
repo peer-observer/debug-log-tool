@@ -211,7 +211,9 @@ nothing was merged.
 
 A `templates` instance accumulates one catalogue when `statePath` is set (each
 log folded in once, `reportPath` rendered from the state) and writes one
-report per log into `reportDir` when it isn't.
+report per log into `reportDir` when it isn't. With `perNode = true` it writes
+`reportDir/<log>/<node>.{json,txt}` instead, a directory per log so two days
+can't overwrite each other.
 
 `nix flake check` includes a NixOS VM test of all of this on Linux; the
 `check` dev-shell shorthand stays limited to build, clippy and fmt.

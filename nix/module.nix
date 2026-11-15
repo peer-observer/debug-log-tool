@@ -295,6 +295,17 @@ let
           description = "Directory for one report per log. Required when `statePath` is null.";
         };
 
+        perNode = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = ''
+            Cluster each node of a merged log on its own (`--per-node`),
+            writing `reportDir/<log>/<node>.{json,txt}` instead of one
+            report per log. Needs `statePath` unset, since nothing is
+            accumulated.
+          '';
+        };
+
         format = lib.mkOption {
           type = lib.types.enum [
             "json"
@@ -482,16 +493,27 @@ let
             fi
           ''
         else
-          ''
-            list_inputs | while read -r log; do
-              report=${lib.escapeShellArg t.reportDir}/$(basename "$log").${
-                if t.format == "json" then "json" else "txt"
-              }
-              ${tool} ${lib.escapeShellArgs reportArgs} "$log" > "$report.tmp"
-              mv "$report.tmp" "$report"
-              echo "wrote $report"
-            done
-          ''
+          if t.perNode then
+            ''
+              list_inputs | while read -r log; do
+                # One directory per log, so two logs can't overwrite each
+                # other's per-node reports. The tool writes them atomically.
+                out=${lib.escapeShellArg t.reportDir}/$(basename "$log")
+                ${tool} --per-node "$out" ${lib.escapeShellArgs reportArgs} "$log"
+                echo "wrote $out"
+              done
+            ''
+          else
+            ''
+              list_inputs | while read -r log; do
+                report=${lib.escapeShellArg t.reportDir}/$(basename "$log").${
+                  if t.format == "json" then "json" else "txt"
+                }
+                ${tool} ${lib.escapeShellArgs reportArgs} "$log" > "$report.tmp"
+                mv "$report.tmp" "$report"
+                echo "wrote $report"
+              done
+            ''
       }
     '';
 
@@ -651,6 +673,10 @@ in
       ++ lib.mapAttrsToList (name: t: {
         assertion = (t.statePath == null) -> (t.reportDir != null && t.reportPath == null);
         message = "services.debug-log-tool.templates.${name}: without statePath (a report per log), set reportDir and leave reportPath unset.";
+      }) enabledTemplates
+      ++ lib.mapAttrsToList (name: t: {
+        assertion = t.perNode -> t.statePath == null;
+        message = "services.debug-log-tool.templates.${name}: perNode writes a report per node into reportDir, so it can't be combined with statePath.";
       }) enabledTemplates
       ++ lib.mapAttrsToList (name: t: {
         assertion = t.inputs != [ ];

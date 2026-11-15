@@ -46,6 +46,12 @@ pkgs.testers.runNixOSTest {
           reportDir = "/srv/per-file";
           format = "text";
         };
+
+        templates.pernode = {
+          inputs = [ "/srv/merged" ];
+          reportDir = "/srv/per-node";
+          perNode = true;
+        };
       };
 
       systemd.tmpfiles.rules = [
@@ -143,5 +149,18 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl start debug-log-tool-templates-perfile.service")
         machine.succeed("test -s /srv/per-file/debug.log-20200101.zst.txt")
         machine.succeed("grep -q '=== net ===' /srv/per-file/debug.log-20200101.zst.txt")
+
+    with subtest("templates reports per node, one directory per log"):
+        machine.succeed("systemctl start debug-log-tool-templates-pernode.service")
+        for date in old:
+            out = f"/srv/per-node/debug.log-{date}.zst"
+            assert machine.succeed(f"ls {out}").split() == ["alice.json", "bob.json"], out
+            machine.succeed(f"grep -q '\"category\":\"net\"' {out}/alice.json")
+            # Each node's own two lines, and no node name in the templates.
+            counts = machine.succeed(
+                f"grep -o '\"count\":[0-9]*' {out}/alice.json | cut -d: -f2"
+            ).split()
+            assert sum(int(c) for c in counts) == 2, counts
+            machine.fail(f"grep -q alice {out}/alice.json")
   '';
 }
