@@ -149,11 +149,22 @@ let
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      example = [
-        "--level"
-        "15"
-      ];
-      description = "Extra arguments appended to the command.";
+      example =
+        if kind == "merge" then
+          [
+            "--before"
+            "20250101"
+          ]
+        else
+          [
+            "--category"
+            "net"
+          ];
+      description = ''
+        Extra arguments appended to the command. An option the module
+        already passes can't be repeated here — the tool rejects a second
+        `--level` or `--min-count` — so set the matching option instead.
+      '';
     };
   };
 
@@ -452,6 +463,8 @@ let
         "--threshold"
         (toString t.threshold)
       ];
+      # Appended to every invocation, so they win over the options above.
+      extra = lib.escapeShellArgs t.extraArgs;
       tool = "${lib.getExe t.package} templates";
     in
     ''
@@ -477,9 +490,9 @@ let
               # Each log is folded in once, so counts don't double on re-runs.
               if grep -qxF "$log" "$seen"; then continue; fi
               if [ -e "$state" ]; then
-                ${tool} --load-state "$state" --save-state "$state" "$log" > /dev/null
+                ${tool} --load-state "$state" --save-state "$state" ${extra} "$log" > /dev/null
               else
-                ${tool} ${lib.escapeShellArgs newStateArgs} --save-state "$state" "$log" > /dev/null
+                ${tool} ${lib.escapeShellArgs newStateArgs} --save-state "$state" ${extra} "$log" > /dev/null
               fi
               printf '%s\n' "$log" >> "$seen"
               echo "ingested $log"
@@ -487,7 +500,7 @@ let
 
             if [ -e "$state" ]; then
               report=${lib.escapeShellArg t.reportPath}
-              ${tool} --load-state "$state" ${lib.escapeShellArgs reportArgs} > "$report.tmp"
+              ${tool} --load-state "$state" ${lib.escapeShellArgs reportArgs} ${extra} > "$report.tmp"
               mv "$report.tmp" "$report"
               echo "wrote $report"
             fi
@@ -499,7 +512,7 @@ let
                 # One directory per log, so two logs can't overwrite each
                 # other's per-node reports. The tool writes them atomically.
                 out=${lib.escapeShellArg t.reportDir}/$(basename "$log")
-                ${tool} --per-node "$out" ${lib.escapeShellArgs reportArgs} "$log"
+                ${tool} --per-node "$out" ${lib.escapeShellArgs reportArgs} ${extra} "$log"
                 echo "wrote $out"
               done
             ''
@@ -509,7 +522,7 @@ let
                 report=${lib.escapeShellArg t.reportDir}/$(basename "$log").${
                   if t.format == "json" then "json" else "txt"
                 }
-                ${tool} ${lib.escapeShellArgs reportArgs} "$log" > "$report.tmp"
+                ${tool} ${lib.escapeShellArgs reportArgs} ${extra} "$log" > "$report.tmp"
                 mv "$report.tmp" "$report"
                 echo "wrote $report"
               done

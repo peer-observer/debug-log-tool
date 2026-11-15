@@ -52,6 +52,15 @@ pkgs.testers.runNixOSTest {
           reportDir = "/srv/per-node";
           perNode = true;
         };
+
+        templates.filtered = {
+          inputs = [ "/srv/merged" ];
+          reportDir = "/srv/filtered";
+          extraArgs = [
+            "--category"
+            "mempool"
+          ];
+        };
       };
 
       systemd.tmpfiles.rules = [
@@ -162,5 +171,13 @@ pkgs.testers.runNixOSTest {
             ).split()
             assert sum(int(c) for c in counts) == 2, counts
             machine.fail(f"grep -q alice {out}/alice.json")
+
+    with subtest("extraArgs reach the command"):
+        machine.succeed("systemctl start debug-log-tool-templates-filtered.service")
+        report = "/srv/filtered/debug.log-20200101.zst.json"
+        machine.succeed(f"test -f {report}")
+        # The logs only have net lines, so filtering to mempool empties
+        # the report — which it can only do if extraArgs got through.
+        assert machine.succeed(f"wc -c < {report}").strip() == "0"
   '';
 }
