@@ -2012,3 +2012,275 @@ fn before_only_merges_older_days() {
         .expect("spawn merge");
     assert!(!out.status.success());
 }
+
+/// Sum of the `"count"` fields in a `--json` report.
+fn json_count_sum(text: &str) -> u64 {
+    text.lines()
+        .map(|l| {
+            let rest = l.split(r#""count":"#).nth(1).expect("count field");
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u64>().unwrap()
+        })
+        .sum()
+}
+
+fn dir_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Two per-node logs with overlapping and distinct templates: `--per-node`
+/// must keep them apart and account for every line of each.
+#[test]
+fn per_node_writes_one_report_per_node() {
+    let dir = test_dir("per_node_writes_one_report_per_node");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+
+    write_gz(
+        &inputs.join("debug.log-20260515-alpha.gz"),
+        "2026-05-15T00:00:01 [net] received: ping (8 bytes) peer=1\n\
+         2026-05-15T00:00:03 [net] received: ping (8 bytes) peer=2\n\
+         2026-05-15T00:00:05 [validation] UpdateTip: new best=aa height=1\n",
+    );
+    write_gz(
+        &inputs.join("debug.log-20260515-beta.gz"),
+        "2026-05-15T00:00:02 [net] received: ping (8 bytes) peer=3\n\
+         2026-05-15T00:00:04 [net] received: ping (8 bytes) peer=4\n",
+    );
+
+    let merged_dir = dir.join("merged");
+    run_ok(
+        bin().args(["merge", "-o"]).arg(&merged_dir).arg(&inputs),
+        "merge",
+    );
+    let merged = merged_dir.join("debug.log-20260515.zst");
+
+    let reports = dir.join("reports");
+    let out = bin()
+        .arg("templates")
+        .arg("--json")
+        .arg("--per-node")
+        .arg(&reports)
+        .arg(&merged)
+        .output()
+        .expect("spawn templates");
+    assert!(out.status.success(), "{:?}", out);
+    assert!(out.stdout.is_empty(), "per-node wrote to stdout");
+
+    assert_eq!(dir_names(&reports), ["alpha.json", "beta.json"]);
+
+    let alpha = std::fs::read_to_string(reports.join("alpha.json")).unwrap();
+    let beta = std::fs::read_to_string(reports.join("beta.json")).unwrap();
+
+    // Every line of a node is counted in that node's report, and only there.
+    assert_eq!(json_count_sum(&alpha), 3, "{alpha}");
+    assert_eq!(json_count_sum(&beta), 2, "{beta}");
+
+    // A template only alpha logged shows up only in alpha's report.
+    assert!(alpha.contains("UpdateTip"), "{alpha}");
+    assert!(!beta.contains("UpdateTip"), "{beta}");
+    assert!(alpha.contains("received") && beta.contains("received"));
+
+    for (name, text) in [("alpha", &alpha), ("beta", &beta)] {
+        assert!(
+            !text.contains("alpha") && !text.contains("beta"),
+            "node name leaked into {name}: {text}"
+        );
+        assert!(
+            !text.contains(r#""category":null"#),
+            "prefix not stripped in {name}: {text}"
+        );
+    }
+}
+
+/// Without `--json` the reports are the grouped text form.
+#[test]
+fn per_node_without_json_writes_text_reports() {
+    let dir = test_dir("per_node_without_json_writes_text_reports");
+    let inputs = dir.join("inputs");
+    std::fs::create_dir_all(&inputs).unwrap();
+    for node in ["alpha", "beta"] {
+        write_gz(
+            &inputs.join(format!("debug.log-20260515-{node}.gz")),
+            "2026-05-15T00:00:01 [net] received: ping (8 bytes) peer=1\n",
+        );
+    }
+    let merged_dir = dir.join("merged");
+    run_ok(
+        bin().args(["merge", "-o"]).arg(&merged_dir).arg(&inputs),
+        "merge",
+    );
+
+    let reports = dir.join("reports");
+    run_ok(
+        bin()
+            .arg("templates")
+            .arg("--per-node")
+            .arg(&reports)
+            .arg(merged_dir.join("debug.log-20260515.zst")),
+        "templates --per-node",
+    );
+    assert_eq!(dir_names(&reports), ["alpha.txt", "beta.txt"]);
+    let alpha = std::fs::read_to_string(reports.join("alpha.txt")).unwrap();
+    assert!(alpha.starts_with("=== net ==="), "{alpha}");
+    assert!(alpha.contains("     1 received"), "{alpha}");
+}
+
+/// A gzipped and a plain merged log work too: the input is sniffed the same
+/// way as on the normal path.
+#[test]
+fn per_node_reads_gzip_and_plain_merged_logs() {
+    let dir = test_dir("per_node_reads_gzip_and_plain_merged_logs");
+    let merged = "alpha 2026-05-15T00:00:01 [net] received: ping (8 bytes) peer=1\n\
+                  beta 2026-05-15T00:00:02 [net] received: ping (8 bytes) peer=2\n";
+
+    let gz = dir.join("merged.gz");
+    write_gz(&gz, merged);
+    let plain = dir.join("merged.log");
+    std::fs::write(&plain, merged).unwrap();
+
+    for (input, name) in [(&gz, "gz"), (&plain, "plain")] {
+        let reports = dir.join(name);
+        run_ok(
+            bin()
+                .arg("templates")
+                .arg("--per-node")
+                .arg(&reports)
+                .arg(input),
+            name,
+        );
+        assert_eq!(dir_names(&reports), ["alpha.txt", "beta.txt"], "{name}");
+    }
+}
+
+/// An unprefixed per-node log is not valid input for `--per-node`.
+#[test]
+fn per_node_rejects_an_unprefixed_log() {
+    let dir = test_dir("per_node_rejects_an_unprefixed_log");
+    let input = dir.join("debug.log");
+    std::fs::write(
+        &input,
+        "2026-05-15T00:00:01 [net] received: ping (8 bytes) peer=1\n",
+    )
+    .unwrap();
+
+    let out = bin()
+        .arg("templates")
+        .arg("--per-node")
+        .arg(dir.join("reports"))
+        .arg(&input)
+        .output()
+        .expect("spawn templates");
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--per-node needs a merged log (lines prefixed with <node>)"),
+        "{err}"
+    );
+    assert!(!dir.join("reports").exists(), "reports written anyway");
+}
+
+/// `--per-node` keeps no state, so pairing it with a state file is an error
+/// rather than a silently ignored flag.
+#[test]
+fn per_node_rejects_state_files() {
+    let dir = test_dir("per_node_rejects_state_files");
+    let input = dir.join("merged.log");
+    std::fs::write(
+        &input,
+        "alpha 2026-05-15T00:00:01 [net] received: ping (8 bytes) peer=1\n",
+    )
+    .unwrap();
+
+    let state = dir.join("state.jsonl");
+    run_ok(
+        bin()
+            .arg("templates")
+            .arg("--save-state")
+            .arg(&state)
+            .arg(&input),
+        "templates --save-state",
+    );
+
+    for flag in ["--save-state", "--load-state"] {
+        let out = bin()
+            .arg("templates")
+            .arg("--per-node")
+            .arg(dir.join("reports"))
+            .arg(flag)
+            .arg(&state)
+            .arg(&input)
+            .output()
+            .expect("spawn templates");
+        assert!(!out.status.success(), "{flag} accepted");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("--per-node can't be combined with --load-state/--save-state"),
+            "{flag}: {err}"
+        );
+    }
+}
+
+/// A line that carries no node name of its own is counted under `_unknown`,
+/// whether it has no space at all or starts with one.
+#[test]
+fn per_node_counts_a_line_without_a_node_as_unknown() {
+    let dir = test_dir("per_node_counts_a_line_without_a_node_as_unknown");
+    let input = dir.join("merged.log");
+    std::fs::write(
+        &input,
+        "alpha 2026-05-15T00:00:01 [net] received: ping (8 bytes) peer=1\n\
+         continuation\n\
+         \u{20}2026-05-15T00:00:02 [net] received: ping (8 bytes) peer=2\n",
+    )
+    .unwrap();
+
+    let reports = dir.join("reports");
+    run_ok(
+        bin()
+            .arg("templates")
+            .arg("--per-node")
+            .arg(&reports)
+            .arg(&input),
+        "templates --per-node",
+    );
+    assert_eq!(dir_names(&reports), ["_unknown.txt", "alpha.txt"]);
+    let unknown = std::fs::read_to_string(reports.join("_unknown.txt")).unwrap();
+    assert!(unknown.contains("continuation"), "{unknown}");
+    assert!(unknown.contains("=== net ==="), "{unknown}");
+}
+
+/// The node name becomes a filename, so a line claiming one that would
+/// escape the directory or hide the report is an error.
+#[test]
+fn per_node_rejects_a_node_name_that_is_not_a_filename() {
+    let dir = test_dir("per_node_rejects_a_node_name_that_is_not_a_filename");
+    for (i, node) in ["../evil", ".hidden", "sub/dir"].iter().enumerate() {
+        let input = dir.join(format!("merged{i}.log"));
+        std::fs::write(
+            &input,
+            format!("{node} 2026-05-15T00:00:01 [net] received: ping (8 bytes) peer=1\n"),
+        )
+        .unwrap();
+        let reports = dir.join(format!("reports{i}"));
+        let out = bin()
+            .arg("templates")
+            .arg("--per-node")
+            .arg(&reports)
+            .arg(&input)
+            .output()
+            .expect("spawn templates");
+        assert!(!out.status.success(), "{node} accepted");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(&format!("node name is not a filename: {node}")),
+            "{node}: {err}"
+        );
+        assert!(!reports.exists(), "{node}: reports written anyway");
+    }
+}
